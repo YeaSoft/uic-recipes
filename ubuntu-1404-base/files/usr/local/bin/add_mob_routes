@@ -1,0 +1,173 @@
+#!/bin/bash
+#
+# (c) 2010-2012 YeaSoft Int'l - Leo Moll
+#
+# Adds the internal mobilized! routes to multihomed machines
+
+VERSION=0.4
+SCRIPTNAME=$(basename $0)
+SCRIPTPATH=$(expr match "$0" '\(.*\)'\/$SCRIPTNAME)
+
+#####################################
+# variables section
+
+# initialize configuration variables
+VPNGATE=10.21.0.1
+DEVGATE=
+
+# load configuration data
+if [ -e /etc/yst.conf ]; then
+	source /etc/yst.conf
+elif [ -e $SCRIPTPATH/yst.conf ]; then
+	source $SCRIPTPATH/yst.conf
+fi
+
+# initialize runtime variables
+VERBOSE=0
+FORCEIT=0
+YEASOFT=0
+
+#####################################
+# basic script functions
+
+function show_usage {
+	cat <<EOF
+usage: $SCRIPTNAME [-hvF] [[gateway] If]
+
+Options:
+ -v, --verbose     increase verbosity
+ -F, --force       remove all routes to gateway before adding if already present
+ -Y, --yeasoft     add also yeasoft routes
+(-h) --help        show this help (-h works with no other options)
+
+Adds the internal mobilized! routes to multihomed machines
+
+EOF
+}
+
+function show_name {
+	echo "$SCRIPTNAME, version $VERSION"
+}
+
+function show_verbose {
+	if [ $VERBOSE -ge $1 ]; then
+		echo "$SCRIPTNAME: ${*:2}"
+	fi
+}
+
+function show_error {
+	echo "$SCRIPTNAME error: $*" >&2
+}
+
+function test_exec {
+	case $? in
+	0);;
+	*)	case "$1" in
+		"")	show_error "last command failed with error (code $?)";;
+		*)	show_error "$1 failed with error (code $?)";;
+		esac
+		if [ -n "%2" ]; then
+			show_error "commandline: $2"
+		fi
+		exit $?;;
+	esac
+}
+
+#####################################
+# script initialisation
+
+PARSER=$(getopt --name "$SCRIPTNAME" --options h,v,F,Y --longoptions help,verbose,force,yeasoft -- "$@")
+case $? in
+0);;
+1) show_error "syntax or usage error (code $?)"; exit $?;;
+2) show_error "syntax or usage error (code $?) in [getopt]"; exit $?;;
+3) show_error "internal error (code $?) in [getopt]"; exit $?;;
+4) show_error "wrong getopt version istalled"; exit $?;;
+*) show_error "Unknown getopt error (code $?)"; exit $?;;
+esac
+
+# Parameter parsing
+eval set -- "$PARSER"
+while true; do
+	case "$1" in
+	-h|--help)			show_name; echo; show_usage; exit 1;;
+	-v|--verbose)			(( VERBOSE++ )); shift;;
+	-F|--force)			FORCEIT=1; shift;;
+	-Y|--yeasoft			YEASOFT=1; shift;;
+	--)				shift; break;;
+        *)				echo "$SCRIPTNAME: $1: unknown option"; show_error "syntax or usage error (code 1)"; exit 1;;
+        esac
+done
+
+# configuration checking
+case "$VERBOSE" in
+0)	;;
+1)	VV="-v"  ;;
+*)	VV="-vv" ;;
+esac
+
+#####################################
+# script functions
+function routes_add () {
+	if route -n | grep "${VPNGATE}" > /dev/null; then
+		show_verbose 1 Routes already exists!
+		if [ $FORCEIT -eq 1 ]; then
+			del_all_routes $VV $2
+		else
+			exit 1
+		fi
+	fi
+	if ! route -n | grep "${VPNGATE}" > /dev/null; then
+		route_add   10.21.0.0/21 $1 $2
+		route_add   10.21.8.0/23 $1 $2
+		route_add  10.21.10.0/23 $1 $2
+		route_add  10.21.18.0/23 $1 $2
+		route_add  10.21.98.0/23 $1 $2
+		route_add 10.21.126.0/24 $1 $2
+		route_add 10.21.127.0/24 $1 $2
+		route_add 10.21.128.0/17 $1 $2
+		route_add 10.22.125.0/25 $1 $2
+		route_add 10.23.0.0/17 $1 $2
+		if [ $YEASOFT -eq 1 ]; then
+			route_add 10.65.0.0/16 $1 $2
+		fi
+	fi
+}
+
+function route_add () {
+#	route | grep -w U | awk '{print $1}' | while read line; do
+#		if [ "$(dirname $1)" == "$line" ]; then
+#			show_verbose 1 Skipping own network $line
+#			return 1
+#		fi
+#	done
+#	# WARNING: Piping to a loop behaves like a subshell!
+#	if [ $? -eq 0 ]; then
+#		show_verbose 2 Executing route add -net $1 gw ${VPNGATE} $2 $3
+#		route add -net $1 gw ${VPNGATE} $2 $3
+#	fi
+
+
+	for line in $(route | grep -w U | awk '{print $1}'); do
+		if [ "$(dirname $1)" == "$line" ]; then
+			show_verbose 1 Skipping own network $line
+			return 1
+		fi
+	done
+	show_verbose 2 Executing route add -net $1 gw ${VPNGATE} $2 $3
+	route add -net $1 gw ${VPNGATE} $2 $3
+
+}
+
+#####################################
+# script main routine
+# configuration checking
+case "$#" in
+0)      ;;
+1)      DEVGATE="dev $1";;
+2)	VPNGATE="$1"; DEVGATE="dev $2";;
+esac
+
+routes_add $DEVGATE
+
+exit 0

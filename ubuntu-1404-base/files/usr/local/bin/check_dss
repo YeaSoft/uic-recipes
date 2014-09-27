@@ -1,0 +1,321 @@
+#!/bin/bash
+#
+# (c) 2008-2010 YeaSoft Int'l - Leo Moll
+#
+# This script checks for the status of the disk subsystem and
+# then it E-mails the results to the address(es) supplied.
+# If no address is supplied, it will mail the results to the
+# addresses listed in $DEFAULT_ADDR
+
+VERSION=1.0
+SCRIPTNAME=$(basename $0)
+SCRIPTPATH=$(expr match "$0" '\(.*\)'\/$SCRIPTNAME)
+
+#####################################
+# variables section
+
+# initialize configuration variables
+DEFAULT_ADDR="root"
+DEFAULT_FROM="Root Account ($(hostname)) <root>"
+LIMIT_FS_USE="80"
+LIMIT_DISC_TEMP="50"
+
+# load configuration data
+if [ -e /etc/yst.conf ]; then
+	source /etc/yst.conf
+elif [ -e $SCRIPTPATH/yst.conf ]; then
+	source $SCRIPTPATH/yst.conf
+fi
+
+# Initialize runtime variables
+VERBOSE=0
+DOWNLOAD=1
+MAILIT=1
+MAILHEADERS=0
+FULLDATE="$(date)"
+HDDTEMP="$(which hddtemp)"
+MDSTAT="/proc/mdstat"
+HOST=$(hostname)
+FQDN=$(hostname -f)
+MAIL_FROM="$DEFAULT_FROM"
+MAIL_SUBJ="$FQDN - Storage Subsystem Report"
+MAIL_DEST="$DEFAULT_ADDR"
+MAIL_ALWAYS=0
+
+# compatibility issues
+case $SCRIPTNAME in
+dss-report)	MAILIT=0; MAIL_ALWAYS=1; MAILHEADERS=0;;
+dss-mail)	MAILIT=0; MAIL_ALWAYS=1; MAILHEADERS=1;;
+esac
+
+#####################################
+# basic script functions
+
+function show_usage {
+	cat <<EOF
+usage: $SCRIPTNAME [-hv] [to-addr] [...]
+
+Options:
+ -v, --verbose                    increase verbosity
+ -p, --pretend                    do not mail it, only output the results
+ -m, --mail-headers               output "From:" and "Subject:" mail headers
+ -T, --no-temperature             no temperature report
+ -R, --no-raid                    no RAID report
+ -a, --always                     produce always a report
+ -A, --alert                      produce report only on alert condition
+(-h) --help                       show this help (-h works with no other options)
+
+This script checks for the status of the disk subsystem and
+then it E-mails the results to the address(es) supplied.
+If no address is supplied, it will mail the results to the
+addresses listed in \$DEFAULT_ADDR ($DEFAULT_ADDR)
+
+EOF
+}
+
+function show_name {
+	echo "$SCRIPTNAME, version $VERSION"
+}
+
+function show_verbose {
+	if [ $VERBOSE -ge $1 ]; then
+		echo "$SCRIPTNAME: ${*:2}"
+	fi
+}
+
+function show_error {
+	echo "$SCRIPTNAME error: $*" >&2
+}
+
+function test_exec {
+	case $? in
+	0);;
+	*)	case "$1" in
+		"")	show_error "last command failed with error (code $?)";;
+		*)	show_error "$1 failed with error (code $?)";;
+		esac
+		if [ -n "%2" ]; then
+			show_error "commandline: $2"
+		fi
+		exit $?;;
+	esac
+}
+
+#####################################
+# script initialisation
+
+PARSER=$(getopt --name "$SCRIPTNAME" --options h,v,p,m,T,R,a,A --longoptions help,verbose,pretend,mail-headers,no-temperature,no-raid,always,alert -- "$@")
+case $? in
+0);;
+1) show_error "syntax or usage error (code $?)"; exit $?;;
+2) show_error "syntax or usage error (code $?) in [getopt]"; exit $?;;
+3) show_error "internal error (code $?) in [getopt]"; exit $?;;
+4) show_error "wrong getopt version istalled"; exit $?;;
+*) show_error "Unknown getopt error (code $?)"; exit $?;;
+esac
+
+# Parameter parsing
+eval set -- "$PARSER"
+while true; do
+	case "$1" in
+	-v|--verbose)			(( VERBOSE++ )); shift;;
+	-p|--pretend)			MAILIT=0; shift;;
+	-m|--mail-headers)		MAILHEADERS=1; shift;;
+	-T|--no-temperature)		HDDTEMP=""; shift;;
+	-R|--no-raid)			MDSTAT=""; shift;;
+	-a|--always)			MAIL_ALWAYS=1; shift;;
+	-A|--alert)			MAIL_ALWAYS=0; shift;;
+	-h|--help)			show_name; echo; show_usage; exit 1;;
+	--)				shift; break;;
+        *)				echo "$SCRIPTNAME: $1: unknown option"; show_error "syntax or usage error (code 1)"; exit 1;;
+        esac
+done
+
+# configuration checking
+case "$VERBOSE" in
+0)	AV="-qq";;
+1)	AV="-q";;
+*)	AV="";;
+esac
+
+if [ $# -gt 0 ]; then
+	MAIL_DEST="$*"
+fi
+
+#####################################
+# script functions
+
+function add_alert
+{
+	NEXT_ALERT=${#ALERTS[@]}
+	ALERTS[$NEXT_ALERT]="$*"
+	show_verbose 1 Detected Alert $*
+}
+
+function show_alerts
+{
+	if [ ${#ALERTS[@]} -gt 0 ]; then
+		echo
+		for element in $(seq 0 $((${#ALERTS[@]} - 1))); do
+			echo "WARNING: ${ALERTS[$element]}"
+		done
+	fi
+}
+
+function test_space
+{
+	# enumerate mouted filesystems
+	mounted_devices=$(df -Pl -x tmpfs -x usbfs | grep /dev | grep -v none | awk '{print $1}')
+
+	for mounted_device in $mounted_devices; do
+		# determine usage
+		usage=$(df -Pl -x tmpfs -x usbfs | grep $mounted_device | awk '{print $5}' | tr -d %)
+		mount_point=$(df -Pl -x tmpfs -x usbfs | grep $mounted_device | awk '{print $6}')
+
+		# check if too full
+		if [ $usage -ge $LIMIT_FS_USE ]; then
+			add_alert "Disk usage on $mounted_device mounted on $mount_point is critical (Usage $usage%)"
+		fi
+	done
+}
+
+function test_temperature
+{
+	if [ -z $HDDTEMP ]; then
+		return 0
+	fi
+
+	devicelist=$(find /dev -maxdepth 1 -name '[sh]d?')
+	if [ ! -z "$devicelist" ]; then
+		for device in $devicelist; do
+			temperature=$($HDDTEMP -qn $device 2> /dev/null)
+			if [ $temperature -ge $LIMIT_DISC_TEMP ]; then
+				add_alert "Temperature on $device is critical: $temperature degrees"
+			fi
+		done
+	fi
+}
+
+function test_raid
+{
+	if [ ! -e /proc/mdstat ]; then
+		# no raid installed
+		return
+	fi
+
+	devicelist=$(find /dev -maxdepth 1 -name 'md[0-9]')
+	if [ ! -z "$devicelist" ]; then
+		for device in $devicelist; do
+			failure=$(grep ${device:5} /proc/mdstat | grep '](F)')
+			if [ ! -z "$failure" ]; then
+				add_alert "Failure on /dev/$failure"
+			fi
+		done
+	fi
+}
+
+
+function show_mail_header
+{
+	if [ $MAILHEADERS -gt 0 ]; then
+		echo "From: $MAIL_FROM"
+		echo "Subject: $MAIL_SUBJ"
+		echo
+	fi
+}
+
+function show_header
+{
+	echo
+	echo STORAGE SUBSYSTEM REPORT
+	echo ========================
+	echo Date: $FULLDATE
+	echo Host: $FQDN.
+}
+
+
+function usage_stats
+{
+	echo
+	echo Volume Usage statistics:
+	echo -------------------------------------------------------------------------
+	df -h -l -x tmpfs -x usbfs -T
+	echo -------------------------------------------------------------------------
+	echo
+}
+
+function temperature_stats
+{
+	if [ -z $HDDTEMP ]; then
+		return 0
+	fi
+
+	devicelist=$(find /dev -maxdepth 1 -name '[sh]d?' | sort)
+	if [ ! -z "$devicelist" ]; then
+		echo
+		echo Storage Units Temparature Report:
+		echo -------------------------------------------------------------------------
+		for device in $devicelist; do
+			hddoutput=$($HDDTEMP $device)
+			case $hddoutput in
+			*"not available"*)	;;
+			*)			echo "$hddoutput" ;;
+			esac
+		done
+		echo -------------------------------------------------------------------------
+		echo
+	fi
+}
+
+function raid_stats
+{
+	if [ ! -e $MDSTAT ]; then
+		return 0;
+	fi
+
+	echo
+	echo Raid Subsystem Status:
+	echo -------------------------------------------------------------------------
+	cat /proc/mdstat
+	echo -------------------------------------------------------------------------
+	echo
+
+}
+
+function output_updates
+{
+	show_header
+	show_alerts
+	usage_stats
+	temperature_stats
+	raid_stats
+}
+
+
+#####################################
+# script main routine
+
+# test for critical conditions
+test_space
+test_temperature
+test_raid
+
+if [ ${#ALERTS[@]} -gt 0 -o $MAIL_ALWAYS -gt 0 -o $MAILIT -lt 1 ]; then
+
+	if [ ${#ALERTS[@]} -gt 0 ]; then
+		MAIL_SUBJ="CRITICAL: $MAIL_SUBJ"
+	fi
+
+	if [ $MAILIT -gt 0 ]; then
+		# mail the output
+		show_verbose 1 Sending mail to $MAIL_DEST
+		output_updates | mail -a "From: $MAIL_FROM" -s "$MAIL_SUBJ" $MAIL_DEST
+	else
+		# show the output
+		show_mail_header
+		output_updates
+	fi
+
+else
+	show_verbose 1 No Action will be performed
+fi

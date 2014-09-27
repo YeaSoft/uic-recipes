@@ -1,0 +1,6 @@
+# build intermediates
+/*/uictpl.md5
+/*/chroot/
+/*/output/
+/*.md5
+/*.bz2

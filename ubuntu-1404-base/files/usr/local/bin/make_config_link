@@ -1,0 +1,211 @@
+#!/bin/bash
+#
+# (c) 2008-2010 YeaSoft Int'l - Leo Moll
+#
+# Based on a concept developed by Phil Wenzlawski
+#
+# This script creates links in the config tree hierarchy
+# in order to document a configuration file and include
+# it in the backup strategy
+
+VERSION=0.6
+SCRIPTNAME=$(basename $0)
+SCRIPTPATH=$(expr match "$0" '\(.*\)'\/$SCRIPTNAME)
+CURDATE=$(date +%Y-%m-%d)
+CURTIME=$(date +%H:%M:%S)
+MACHINE=$(hostname)
+MACHINEFQDN=$(hostname -f)
+
+#####################################
+# variables section
+
+# initialize configuration variables
+CFGBACK_TREE=/root/cfg
+CFGBACK_STYLE=flat
+
+# load configuration data
+if [ -e /etc/yst.conf ]; then
+        source /etc/yst.conf
+elif [ -e $SCRIPTPATH/yst.conf ]; then
+	source $SCRIPTPATH/yst.conf
+fi
+
+# initialize runtime variables
+VERBOSE=0
+CATLIST=0
+FILLIST=0
+
+#####################################
+# basic script functions
+
+function show_usage {
+	cat <<EOF
+usage: $SCRIPTNAME [-hv] <category> <absolute path>
+       $SCRIPTNAME -s [<category>]
+       $SCRIPTNAME -l
+
+Options:
+ -v, --verbose                    increase verbosity
+ -s, --show                       lists files tagged for archiving 
+ -l, --list                       lists categories of archiving
+(-h) --help                       show this help (-h works with no other options)
+
+Manage files to be included in automatic configuration backup
+
+EOF
+}
+
+function show_name {
+	echo "$SCRIPTNAME, version $VERSION"
+}
+
+function show_verbose {
+	if [ $VERBOSE -ge $1 ]; then
+		echo "$SCRIPTNAME: ${*:2}"
+	fi
+}
+
+function show_error {
+	echo "$SCRIPTNAME error: $*" >&2
+}
+
+function test_exec {
+	case $? in
+	0);;
+	*)	case "$1" in
+		"")	show_error "last command failed with error (code $?)";;
+		*)	show_error "$1 failed with error (code $?)";;
+		esac
+		if [ -n "%2" ]; then
+			show_error "commandline: $2"
+		fi
+		exit $?;;
+	esac
+}
+
+#####################################
+# script initialisation
+
+PARSER=$(getopt --name "$SCRIPTNAME" --options h,v,l,s --longoptions help,verbose,list,show -- "$@")
+case $? in
+0);;
+1) show_error "syntax or usage error (code $?)"; exit $?;;
+2) show_error "syntax or usage error (code $?) in [getopt]"; exit $?;;
+3) show_error "internal error (code $?) in [getopt]"; exit $?;;
+4) show_error "wrong getopt version istalled"; exit $?;;
+*) show_error "Unknown getopt error (code $?)"; exit $?;;
+esac
+
+# Parameter parsing
+eval set -- "$PARSER"
+while true; do
+	case "$1" in
+	-h|--help)			show_name; echo; show_usage; exit 1;;
+	-l|--list)			CATLIST=1; shift;;
+	-s|--show)			FILLIST=1; shift;;
+	-v|--verbose)			(( VERBOSE++ )); shift;;
+	--)				shift; break;;
+        *)				echo "$SCRIPTNAME: $1: unknown option"; show_error "syntax or usage error (code 1)"; exit 1;;
+        esac
+done
+
+#####################################
+# script functions
+
+function show_categories {
+	if [ "$CFGBACK_STYLE" == "flat" ]; then
+		if [ $FILLIST -ne 0 ]; then
+			if [ $# -eq 0 ]; then
+				sort ${CFGBACK_TREE}/.file_index
+			else
+				grep "^$1" ${CFGBACK_TREE}/.file_index | sort
+			fi
+		else
+			awk '{print $1}' ${CFGBACK_TREE}/.file_index | sort -u
+		fi
+	else
+		echo TODO
+	fi
+	exit 0
+}
+
+function show_files {
+	if [ "$CFGBACK_STYLE" == "flat" ]; then
+		if [ $# -eq 0 ]; then
+			awk '{print $2}' ${CFGBACK_TREE}/.file_index | sort
+		else
+			grep "^$1" ${CFGBACK_TREE}/.file_index | awk '{print $2}' | sort
+		fi
+	else
+		echo TODO
+	fi
+	exit 0
+}
+
+
+#####################################
+# script main routine
+
+if [ $CATLIST -ne 0 ]; then
+	show_categories "$1"
+fi
+
+if [ $FILLIST -ne 0 ]; then
+	show_files "$1"
+fi
+
+# configuration checking
+
+if [ $# -eq 0 ]; then
+	show_usage
+	exit 1
+fi
+
+if [ $# -ne 2 ]; then
+	show_error wrong number of parameters $#
+	show_usage
+	exit 2
+fi
+
+if [ ! -e $2 ]; then
+	show_error configuration entity \"$2\" does not exist
+	exit 2
+fi
+
+if [ "${2:0:1}" != "/" ]; then
+	show_error configuration entity path \"$2\" must be absolute
+	exit 2
+fi
+
+ENTITYNAME=$(basename $2)
+ENTITYPATH=$(expr match "$2" '\(.*\)'\/$ENTITYNAME)
+
+if [ "$CFGBACK_STYLE" == "flat" ]; then
+	DESTPATH=${CFGBACK_TREE}$ENTITYPATH
+else
+	DESTPATH=${CFGBACK_TREE}/$1$ENTITYPATH
+fi
+UPCHAIN=$(echo $DESTPATH | sed "s/\/[^\/]*/..\//g")
+
+if [ -d $2 ]; then
+	if [ -L $DESTPATH/$ENTITYNAME ]; then
+		rm $DESTPATH/$ENTITYNAME
+	fi
+	if [ -e $DESTPATH/$ENTITYNAME ]; then
+		show_error "$DESTPATH/$ENTITYNAME" still exists...
+		exit 3
+	fi
+        mkdir -p $DESTPATH
+        ln -sf $UPCHAIN${2:1}/ $DESTPATH/$ENTITYNAME
+	show_verbose 1 Directory link to $2 created in $CFGBACK_TREE/$1
+else
+	mkdir -p $DESTPATH
+	ln -sf $UPCHAIN${2:1} $DESTPATH/$ENTITYNAME
+	show_verbose 1 File link to $2 created in $CFGBACK_TREE/$1
+fi
+
+
+if [ "$CFGBACK_STYLE" == "flat" ]; then
+	echo -e "$1\t$2" >> ${CFGBACK_TREE}/.file_index
+fi
+

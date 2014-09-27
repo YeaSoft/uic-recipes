@@ -1,0 +1,174 @@
+#!/bin/bash
+#
+# (c) 2010 YeaSoft Int'l - Leo Moll
+#
+# This script invokes all unison profiles with names
+# matched by the expression '$(hostname)-*.prf'
+#
+VERSION=1.0
+SCRIPTNAME=$(basename $0)
+SCRIPTPATH=$(expr match "$0" '\(.*\)'\/$SCRIPTNAME)
+
+#####################################
+# variables section
+
+# initialize configuration variables
+UNISONEXE=/usr/bin/unison
+UNISON=/root/.unison
+
+# load configuration data
+if [ -e /etc/yst.conf ]; then
+	source /etc/yst.conf
+elif [ -e $SCRIPTPATH/yst.conf ]; then
+	source $SCRIPTPATH/yst.conf
+fi
+
+# initialize runtime variables
+VERBOSE=0
+UNISON_ACTION=0
+
+#####################################
+# basic script functions
+
+function show_usage {
+	cat <<EOF
+usage: $SCRIPTNAME [-hv] 
+
+Options:
+ -l, --list                 list all jobs that would be executed
+ -v, --verbose              increase verbosity
+(-h) --help                 show this help (-h works with no other options)
+
+This script invokes all unison profiles with names matched by the
+expression '$(hostname)-*.prf'
+
+EOF
+}
+
+function show_name {
+	echo "$SCRIPTNAME, version $VERSION"
+}
+
+function show_verbose {
+	if [ $VERBOSE -ge $1 ]; then
+		echo "$SCRIPTNAME: ${*:2}"
+	fi
+}
+
+function show_error {
+	echo "$SCRIPTNAME error: $*" >&2
+}
+
+function echo_verbose {
+	if [ $VERBOSE -ge $1 ]; then
+		echo "${*:2}"
+	fi
+}
+
+function name_verbose {
+	if [ $VERBOSE -ge $1 ]; then
+		show_name
+		echo;
+	fi
+}
+
+function test_exec {
+	case $? in
+	0);;
+	*)	case "$1" in
+		"")	show_error "last command failed with error (code $?)";;
+		*)	show_error "$1 failed with error (code $?)";;
+		esac
+		if [ -n "%2" ]; then
+			show_error "commandline: $2"
+		fi
+		exit $?;;
+	esac
+}
+
+#####################################
+# script initialisation
+
+PARSER=$(getopt --name "$SCRIPTNAME" --options h,v,l --longoptions help,verbose,un1s0n-sync-this,un1s0n-show-this,list -- "$@")
+case $? in
+0);;
+1) show_error "syntax or usage error (code $?)"; exit $?;;
+2) show_error "syntax or usage error (code $?) in [getopt]"; exit $?;;
+3) show_error "internal error (code $?) in [getopt]"; exit $?;;
+4) show_error "wrong getopt version istalled"; exit $?;;
+*) show_error "Unknown getopt error (code $?)"; exit $?;;
+esac
+
+# Parameter parsing
+eval set -- "$PARSER"
+while true; do
+	case "$1" in
+  	-l|--list)			UNISON_ACTION=2; shift;;
+	-h|--help)			show_name; echo; show_usage; exit 1;;
+	-v|--verbose)			(( VERBOSE++ )); shift;;
+	--un1s0n-sync-this)		UNISON_ACTION=1; shift;;
+	--un1s0n-show-this)		UNISON_ACTION=3; shift;;
+	--)				shift; break;;
+        *)				echo "$SCRIPTNAME: $1: unknown option"; show_error "syntax or usage error (code 1)"; exit 1;;
+        esac
+done
+
+# configuration checking
+case "$VERBOSE" in
+0)	SV="";		TV="";;
+1)	SV="-v";	TV="";;
+*)	SV="-vv";	TV="-v";
+esac
+
+#####################################
+# script functions
+function show_jobs {
+	echo_verbose 1  Unison Sync Jobs...
+	echo_verbose 1  -------------------
+
+	find ${UNISON} -name "$(hostname)*.prf" -exec $0 --un1s0n-show-this {} \;
+}
+
+function show_this {
+	echo  $(basename $1)
+}
+
+function sync_this {
+	echo_verbose 1 "Processing profile $(basename $1)..."
+	${UNISONEXE} $(basename $1)
+	exit 0
+}
+
+function sync_all {
+	# perform name schemed unison synchronisation
+	echo_verbose 1  Unison Sync Jobs...
+	echo_verbose 1  -------------------
+	find ${UNISON} -name "$(hostname)*.prf" -exec $0 --un1s0n-sync-this $SV {} \;
+}
+
+#####################################
+# script main routine
+case $UNISON_ACTION in
+0)	name_verbose 2; sync_all; exit 0;;
+1)	sync_this $1; exit 0;;
+2)	name_verbose 2; show_jobs; exit 0;;
+3)	show_this $1; exit 0;;
+esac
+
+# synchronize the scripts themselves
+#echo Pull server scripts...
+#echo ----------------------
+#rsync --verbose --stats --human-readable --checksum --recursive --links --perms --rsh=ssh --compress ${MOBHUB}:/mnt/data/tftproot/yeatool/ /usr/local/bin/
+
+# synchronize the bind environment
+#echo Pull bind configurations...
+#echo ---------------------------
+#rsync --verbose --stats --human-readable --checksum --recursive --links --perms --rsh=ssh --compress ${MOBHUB}:/etc/bind/named.conf.*.*ar? /etc/bind
+#rsync --verbose --stats --human-readable --checksum --recursive --links --perms --rsh=ssh --compress ${MOBHUB}:/etc/bind/named.conf.local.*-gate /etc/bind
+#service bind9 restart
+
+# synchronize the PXE loader
+#echo Pull PXE Boot Environment...
+#echo ----------------------------
+#rsync --verbose --stats --human-readable --checksum --recursive --links --perms --delete --rsh=ssh --compress ${YEAPXE}:/mnt/data/tftproot/yeaboot/ /mnt/data/tftproot/yeaboot/
+

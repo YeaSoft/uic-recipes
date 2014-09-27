@@ -1,0 +1,239 @@
+#!/bin/bash
+#
+# (c) 2009-2010 YeaSoft Int'l - Leo Moll
+#
+# This script performs a cyclic backup of the
+# specified mysql database 
+
+VERSION=0.2
+SCRIPTNAME=$(basename $0)
+SCRIPTPATH=$(expr match "$0" '\(.*\)'\/$SCRIPTNAME)
+
+#####################################
+# variables section
+
+# initialize configuration variables
+DBBACK_PATH=/root/backups
+DBBACK_NAME=daily-database
+DBBACK_BACK=backup-database
+DBBACK_MODE=""
+DBBACK_OWNER=""
+DBBACK_MAXAGE=30
+DBBACK_HOST="localhost"
+DBBACK_USER="root"
+DBBACK_PASSWD=""
+DBBACK_DATABASE=""
+
+
+# load configuration data
+if [ -e /etc/yst.conf ]; then
+        source /etc/yst.conf
+elif [ -e $SCRIPTPATH/yst.conf ]; then
+	source $SCRIPTPATH/yst.conf
+fi
+
+# initialize runtime variables
+VERBOSE=0
+CURDATE=$(date +%Y-%m-%d)
+SHOWVERBOSE=0
+SHOWVARS=0
+PRETEND=0
+
+#####################################
+# basic script functions
+
+function show_usage {
+	cat <<EOF
+usage: $SCRIPTNAME [-hv]
+
+Options:
+ -v, --verbose                    increase verbosity
+ -s, --show-variables             show internal variables
+ -p, --pretend                    dry run (do not really do anything)
+(-h) --help                       show this help (-h works with no other options)
+
+This script performs a cyclic backup of the specified mysql database
+
+EOF
+}
+
+function show_name {
+	echo "$SCRIPTNAME, version $VERSION"
+}
+
+function show_verbose {
+	if [ $VERBOSE -ge $1 ]; then
+		echo "$SCRIPTNAME: ${*:2}"
+	fi
+}
+
+function show_error {
+	echo "$SCRIPTNAME error: $*" >&2
+}
+
+function show_variables {
+	echo
+	echo "Internal Variables:"
+	echo "  DBBACK_PATH=\"$DBBACK_PATH\""
+	echo "  DBBACK_NAME=\"$DBBACK_NAME\""
+	echo "  DBBACK_BACK=\"$DBBACK_BACK\""
+	echo "  DBBACK_MODE=\"$DBBACK_MODE\""
+	echo "  DBBACK_OWNER=\"$DBBACK_OWNER\""
+	echo "  DBBACK_MAXAGE=\"$DBBACK_MAXAGE\""
+	echo "  DBBACK_HOST=\"$DBBACK_HOST\""
+	echo "  DBBACK_USER=\"$DBBACK_USER\""
+	echo "  DBBACK_PASSWD=\"$DBBACK_PASSWD\""
+	echo "  DBBACK_DATABASE=\"$DBBACK_DATABASE\""
+	echo
+}
+
+function test_exec {
+	case $? in
+	0);;
+	*)	case "$1" in
+		"")	show_error "last command failed with error (code $?)";;
+		*)	show_error "$1 failed with error (code $?)";;
+		esac
+		if [ -n "%2" ]; then
+			show_error "commandline: $2"
+		fi
+		exit $?;;
+	esac
+}
+
+#####################################
+# script initialisation
+
+PARSER=$(getopt --name "$SCRIPTNAME" --options h,v,s,p --longoptions help,verbose,show_verbose,show-variables,pretend -- "$@")
+case $? in
+0);;
+1) show_error "syntax or usage error (code $?)"; exit $?;;
+2) show_error "syntax or usage error (code $?) in [getopt]"; exit $?;;
+3) show_error "internal error (code $?) in [getopt]"; exit $?;;
+4) show_error "wrong getopt version istalled"; exit $?;;
+*) show_error "Unknown getopt error (code $?)"; exit $?;;
+esac
+
+
+# Parameter parsing
+eval set -- "$PARSER"
+while true; do
+        case "$1" in
+        -h|--help)                      show_name; echo; show_usage; exit 1;;
+        -v|--verbose)                   (( VERBOSE++ )); shift;;
+	--show_verbose)			SHOWVERBOSE=1; shift;;
+	-s|--show-variables)		SHOWVARS=1; shift;;
+	-p|--pretend)			PRETEND=1; shift;;
+        --)                             shift; break;;
+        *)                              echo "$SCRIPTNAME: $1: unknown option"; show_error "syntax or usage error (code 1)";$
+        esac
+done
+
+# configuration checking
+case "$VERBOSE" in
+0)			SV="";		TV="";;
+1)	show_name;	SV="-v";	TV="";;
+*)	show_name;	SV="-vv";	TV="-v";
+esac
+
+#####################################
+# script functions
+
+#####################################
+# script main routine
+
+
+if [ $SHOWVERBOSE -gt 0 ]; then
+	show_verbose $*
+	exit 0
+fi
+
+
+# create output filenames
+daily_name=$DBBACK_NAME-$CURDATE.sql.bz2
+latest_name=$DBBACK_BACK-latest.sql.bz2
+daily=$DBBACK_PATH/$daily_name
+monthly=$DBBACK_PATH/$DBBACK_BACK-$CURDATE.sql.bz2
+latest=$DBBACK_PATH/$latest_name
+
+if [ $SHOWVARS -ne 0 ]; then
+	show_variables
+fi
+
+# Leave trace in syslog
+if [ $PRETEND -eq 0 ]; then
+	logger -t db-backup Creating backup of database
+fi
+
+# create the destination directory if needed
+if [ $PRETEND -ne 0 ]; then
+	show_verbose 1 "Not executing mkdir -p $DBBACK_PATH"
+else
+	mkdir -p $DBBACK_PATH || test_exec mkdir "Failed to create $DBBACK_PATH"
+fi
+
+# Create the backup archive
+show_verbose 1 "Creating archive $daily"
+if [ "$DBBACK_PASSWD" != "" ]; then
+	passwd_option="--pass=$DBBACK_PASSWD"
+else
+	passwd_option=""
+fi
+if [ $PRETEND -ne 0 ]; then
+	show_verbose 1 "Not executing mysqldump --skip-lock-tables --host=\"$DBBACK_HOST\" --user=\"$DBBACK_USER\" $passwd_option \"$DBBACK_DATABASE\" | bzip2 > $daily"
+else
+	(mysqldump --skip-lock-tables --host="$DBBACK_HOST" --user="$DBBACK_USER" $passwd_option "$DBBACK_DATABASE" | bzip2 > $daily) || test_exec tar "Failed to create destination archive"
+fi
+
+# Archive the backup of the month's first
+if [ "$(date +%d)" = "01" ]; then
+	if [ $PRETEND -ne 0 ]; then
+		show_verbose 1 "Not executing cp $daily $monthly"
+	else
+		show_verbose 1 "Creating monthly archive $monthly"
+		cp $daily $monthly
+	fi
+fi
+
+# Kill all files older than DBBACK_MAXAGE +1 days
+if [ $DBBACK_MAXAGE -gt 0 ]; then
+	if [ $PRETEND -ne 0 ]; then
+		show_verbose 1 "Not executing find $DBBACK_PATH/$DBBACK_NAME-*.bz2 -maxdepth 0 -type f -mtime +$DBBACK_MAXAGE -exec rm '{}' \;"
+	else
+		show_verbose 1 "Kill all files older than $DBBACK_MAXAGE +1 days"
+	 	find $DBBACK_PATH/$DBBACK_NAME-*.bz2 -maxdepth 0 -type f -mtime +$DBBACK_MAXAGE -exec $0 $SV --show_verbose 1 Deleting old file '{}' \;
+		find $DBBACK_PATH/$DBBACK_NAME-*.bz2 -maxdepth 0 -type f -mtime +$DBBACK_MAXAGE -exec rm '{}' \;
+	fi
+fi
+
+# Create link on latest archive
+if [ $PRETEND -ne 0 ]; then
+	show_verbose 1 "Not executing ln -sf $daily $latest"
+else
+	show_verbose 1 "Creating symbolc link $latest"
+	ln -sf $daily_name $latest
+fi
+
+# Adjust mode and owner
+function adjust_mode_owner() {
+	if [ -e $1 -a "$2" != "" ]; then
+		if [ $PRETEND -ne 0 ]; then
+			show_verbose 1 "Not executing chmod \"$2\" \"$1\""
+		else
+			show_verbose 1 "Setting mode of \"$1\" to \"$2\""
+			chmod "$2" "$1" || test_exec chmod "Failed to change mode"
+		fi
+	fi
+	if [ -e $1 -a "$3" != "" ]; then
+		if [ $PRETEND -ne 0 ]; then
+			show_verbose 1 "Not executing chown --no-dereference \"$3\" \"$1\""
+		else
+			show_verbose 1 "Setting owner of \"$1\" to \"$3\""
+			chown --no-dereference "$3" "$1" || test_exec chown "Failed to change owner"
+		fi
+	fi
+}
+
+adjust_mode_owner "$daily" "$DBBACK_MODE" "$DBBACK_OWNER"
+adjust_mode_owner "$monthly" "$DBBACK_MODE" "$DBBACK_OWNER"
+adjust_mode_owner "$latest" "$DBBACK_MODE" "$DBBACK_OWNER"
