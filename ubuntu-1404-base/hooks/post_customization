@@ -8,16 +8,10 @@
 # This hook will be called by several commands after making any customizations
 # (file copies and deletions) to the installation environment in $TARGET
 
-# copy the configuration file to the destination file system but remove everything
-# not compatible with the target (that may be /bin/sh)
-sed	-e "/^.*uic_require.*$/d" \
-	-e "/^[[:space:]]*UIC_TARGET.*$/d" \
-	-e "/^[[:space:]]*UIC_ROOTPASSWORD.*$/d" \
-	"${TARGET}/uictpl.conf" > "${TARGET}/chroot/etc/uictpl.conf"
-
-# add some more information
-echo "UIC_CREATION_TIMESTAMP=\"$(date +'%Y-%m-%d %H:%M %z')\"" >> "${TARGET}/chroot/etc/uictpl.conf"
-echo "UIC_CREATION_VERSION=\"${VERSION}\"" >> "${TARGET}/chroot/etc/uictpl.conf"
-
-# make sure root can login via SSH
-sed -i -e 's/^[[:space:]]*PermitRootLogin[[:space:]]*.*$/PermitRootLogin yes/' "${TARGET}/chroot/etc/ssh/sshd_config"
+# Newer versions of the OpenSSH package do enforce root login
+# with key base dauthentication or disable it at all. We want to
+# make sure root can login via SSH also with password. The admin
+# can change this later on.
+sed 	-i \
+	-e 's/^[[:space:]]*PermitRootLogin[[:space:]]*.*$/PermitRootLogin yes/' \
+	"${TARGET}/chroot/etc/ssh/sshd_config"
