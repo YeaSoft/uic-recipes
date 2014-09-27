@@ -78,7 +78,7 @@ build_target_adjustfstab() {
 	fi
 }
 
-# build target: exitlinux
+# build target:	exitlinux
 # parameters:   [-t|--timout <seconds>] Boot timeout in seconds
 # description:	This target routine detects the attached target volume and
 #		makes it bootable by installing the extlinux boot loader
