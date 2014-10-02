@@ -1,0 +1,274 @@
+#!/bin/bash
+#
+# (c) 2007,2008 YeaSoft Int'l - Leo Moll
+#
+# This script configures the firewall of tuxpoldo.yeasoft.local 
+# and saves permanently the settings if -s is specified
+#
+SCRIPTNAME=$(basename $0)
+SCRIPTPATH=$(expr match "$0" '\(.*\)'\/$SCRIPTNAME)
+SCRIPTEXTE=$(expr match "$SCRIPTNAME" '[^.]*.\(.*\)')
+
+
+#========================================
+#
+# Prevent from starting on the wrong node
+#
+if [ "$(hostname)" != "tuxpoldo" ]; then
+        echo "ERROR: $(basename $0) called from node $(hostname)"
+        exit 2
+fi
+
+
+#========================================
+# param1: protocol
+# param2: incoming address
+# param3: destination address
+# param4: port number
+#
+function hard_redirect() {
+	if [ "$1" != "all" ]; then
+		HDPROTO="--protocol $1"
+	else
+		HDPROTO=""
+	fi
+	if [ "$2" != "0.0.0.0" ]; then
+		HDSOURCE=" --destination $2"
+	else
+		HDSOURCE=""
+	fi
+	if [ "$4" != "0" ]; then
+		HDPORT1="--dport $4"
+		HDPORT2="--to-destination $3:$4"
+	else
+		HDPORT1=""
+		HDPORT2="--to-destination $3"
+	fi
+	$IPTABLES --append PREROUTING --table nat --in-interface $EXTIF $HDPROTO $HDSOURCE $HDPORT1 --jump DNAT $HDPORT2
+	$IPTABLES --append FORWARD --in-interface $EXTIF --out-interface $INTIF $HDPROTO --destination $3 $HDPORT1 --jump ACCEPT
+
+#	if [ "$2" != "0.0.0.0" ]; then
+#		$IPTABLES --append PREROUTING --table nat --in-interface $EXTIF --protocol $1 --destination $2 --dport $4 --jump DNAT --to-destination $3:$4
+#		$IPTABLES --append FORWARD --in-interface $EXTIF --out-interface $INTIF --protocol $1 --destination $3 --dport $4 --jump ACCEPT
+#	else
+#		$IPTABLES --append PREROUTING --table nat --in-interface $EXTIF --protocol $1 --dport $4 --jump DNAT --to-destination $3:$4
+#		$IPTABLES --append FORWARD --in-interface $EXTIF --out-interface $INTIF --protocol $1 --destination $3 --dport $4 --jump ACCEPT
+#	fi
+}
+
+#=====================
+#
+# Initialize Variables
+#
+IPTABLES=/sbin/iptables
+
+EXTIF="eth1"
+INTIF="eth0"
+VPNIF="ppp+"
+TUNIF="tun+"
+
+# SLAVE="10.65.7.13"
+# YEASOFT_SERVER="80.86.82.76"
+
+
+#==================
+#
+# Log instantiation
+#
+logger -t fw-setup Configuring Firewall
+echo "Configuring Firewall..."
+
+
+#=======================================================================
+# iptables has 3 tables: the "filter", the "nat" and the "mangle" table.
+# If not otherwise specified by the "-t [table]" parameter, all commands
+# apply to the "filter table"
+#=======================================================================
+
+#==========================
+#
+# Initialize:
+#
+# Set Default Policies to DROP and flush all rules for each chain...
+#
+$IPTABLES --policy INPUT DROP
+$IPTABLES --flush  INPUT
+$IPTABLES --policy OUTPUT ACCEPT
+$IPTABLES --flush  OUTPUT
+$IPTABLES --policy FORWARD DROP
+$IPTABLES --flush  FORWARD
+#
+# Flush also all rules in the nat table
+#
+$IPTABLES --table nat --flush
+
+#===================
+# INPUT chain rules:
+#
+# Accept ALL packets from the "lo" (Loopback) interface
+#
+$IPTABLES --append INPUT --in-interface lo --jump ACCEPT
+
+#
+# Accept ALL packets from the internal interface
+#
+$IPTABLES --append INPUT --in-interface $INTIF --jump ACCEPT
+
+#
+# Prevent contact between new legacy server OLDPOLDO and TUXPOLDO as DC of YEASOFT
+#
+#for i in 139 445
+#do
+#        echo -e "Closing TCP Traffic on Port " $i "..."
+#        $IPTABLES --append INPUT --in-interface $TUNIF --protocol tcp --destination-port $i --jump DROP
+#        $IPTABLES --append INPUT --in-interface $VPNIF --protocol tcp --destination-port $i --jump DROP
+#done
+#for i in 137 138
+#do
+#        echo -e "Closing UDP Traffic on Port " $i "..."
+#        $IPTABLES --append INPUT --in-interface $TUNIF --protocol udp --destination-port $i --jump DROP
+#        $IPTABLES --append INPUT --in-interface $VPNIF --protocol udp --destination-port $i --jump DROP
+#done
+
+
+
+#
+# Accept ALL packets from the PPTP-VPN and OpenVPN interface
+#
+$IPTABLES --append INPUT --in-interface $VPNIF --jump ACCEPT
+$IPTABLES --append INPUT --in-interface $TUNIF --jump ACCEPT
+
+#
+# Accept packets from the external interface ONLY if a connection to the
+# source address is already ESTABLISHED or RELATED to an existing
+# connection
+#
+$IPTABLES --append INPUT --in-interface $EXTIF --match state --state ESTABLISHED,RELATED --jump ACCEPT
+
+#
+# Accept also incoming TCP traffic on the external interface if
+# the destination port is: SSH(22), HTTP(80), HTTPS(443), PPTP(1723)
+#
+for i in 22 80 443 1723
+do
+	echo -e "Opening TCP Traffic to Port " $i "..."
+	$IPTABLES --append INPUT --in-interface $EXTIF --protocol tcp --destination-port $i --jump ACCEPT
+done
+
+#
+# And also accept incoming UDP traffic from the external interface if
+# the destination port is NTP(123), IAX(4569), SIP(5060), RTP(8000-20000)
+#
+for i in 123 1194 4569 5060 8000:20000
+do
+	echo -e "Opening UDP Traffic on Port " $i "..."
+	$IPTABLES --append INPUT --in-interface $EXTIF --protocol udp --destination-port $i --jump ACCEPT
+done
+
+
+#
+# Accept all GRE incoming traffic for VPN connections
+#
+echo -e "Opening GRE Traffic..."
+$IPTABLES --append INPUT --in-interface $EXTIF --protocol gre --jump ACCEPT
+
+
+#====================
+# OUTPUT chain rules:
+#
+# Improve handling of timing sensitive data
+#
+# $IPTABLES --table mangle --append OUTPUT --out-interface $TUNIF --protocol udp --jump TOS --set-tos Minimize-Delay
+# $IPTABLES --table mangle --append OUTPUT --out-interface $VPNIF --protocol udp --jump TOS --set-tos Minimize-Delay
+
+
+#=====================
+# FORWARD chain rules:
+#
+# The following rules apply only to forwarded packets
+#
+echo -e "Allow all connections OUT and only existing and specified ones IN"
+
+#
+# Allow packets from the external interface to be forwarded to internal
+# computers only if they are in response of an ESTABLISHED connection
+# or they are RELATED to an already open connection
+#
+$IPTABLES --append FORWARD --in-interface $EXTIF --out-interface $INTIF --match state --state ESTABLISHED,RELATED --jump ACCEPT
+
+#
+# Block all packets to the peer VPN...
+#
+$IPTABLES --append FORWARD --in-interface $INTIF --destination 83.141.48.22 --jump DROP
+
+#
+# Allow ALL packets from the internal interface to be forwarded to the
+# external interface
+#
+$IPTABLES --append FORWARD --in-interface $INTIF --out-interface $EXTIF --jump ACCEPT
+
+#
+# Allow ALL packets from the internal interface to be forwarded to the
+# VPN interfaces
+#
+$IPTABLES --append FORWARD --in-interface $INTIF --out-interface $VPNIF --jump ACCEPT
+$IPTABLES --append FORWARD --in-interface $VPNIF --out-interface $INTIF --jump ACCEPT
+$IPTABLES --append FORWARD --in-interface $INTIF --out-interface $TUNIF --jump ACCEPT
+$IPTABLES --append FORWARD --in-interface $TUNIF --out-interface $INTIF --jump ACCEPT
+
+#
+# Allow Cross-VPN Connections (pptp-tun)
+#
+$IPTABLES --append FORWARD --in-interface $TUNIF --out-interface $VPNIF --jump ACCEPT
+$IPTABLES --append FORWARD --in-interface $VPNIF --out-interface $TUNIF --jump ACCEPT
+
+#
+# Redirect all incoming BitTorrent connections to a specific computer
+#
+# hard_redirect tcp 0.0.0.0 $SLAVE 27080
+# hard_redirect udp 0.0.0.0 $SLAVE 27080
+
+#
+# Redirect all incoming OneSwarm connections to a specific computer
+#
+# hard_redirect tcp 0.0.0.0 $SLAVE 27308
+# hard_redirect udp 0.0.0.0 $SLAVE 27308
+
+#
+# Log all blocked packets
+#
+# $IPTABLES --append INPUT --in-interface $EXTIF --jump LOG --log-prefix "BLOCKED INCOMING PACKET: "
+# $IPTABLES --append OUTPUT --out-interface $EXTIF --jump LOG --log-prefix "BLOCKED OUTGOING PACKET: "
+# $IPTABLES --append FORWARD --in-interface $EXTIF --jump LOG --log-prefix "BLOCKED FORWARDER PACKET: "
+
+#
+# Show all forwarded packets on the syslog
+#
+# $IPTABLES --append FORWARD --jump LOG
+
+#=====================
+#
+# Configure masquerading on NAT
+#
+echo "Enabling SNAT (MASQUERADE) functionality on $EXTIF"
+
+#
+# Masquerade all packets ROUTED to the external interface
+#
+$IPTABLES --table nat --append POSTROUTING --out-interface $EXTIF  --jump MASQUERADE
+
+
+#
+# Save firewall configuration
+#
+if [ "$1" == "-s" ]; then
+	iptables-save > /etc/iptables.conf
+	logger -t fw-setup Firewall configuration saved as default
+	echo "Saving firewall rules..."
+fi
+
+#====================
+#
+# Finished!
+#
+echo "Firewall done."

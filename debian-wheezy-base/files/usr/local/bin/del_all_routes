@@ -1,0 +1,132 @@
+#!/bin/bash
+#
+# (c) 2010 YeaSoft Int'l - Leo Moll
+#
+# Deletes all explicitely set routes
+
+VERSION=0.2
+SCRIPTNAME=$(basename $0)
+SCRIPTPATH=$(expr match "$0" '\(.*\)'\/$SCRIPTNAME)
+
+#####################################
+# variables section
+
+# initialize configuration variables
+
+# load configuration data
+if [ -e /etc/yst.conf ]; then
+	source /etc/yst.conf
+elif [ -e $SCRIPTPATH/yst.conf ]; then
+	source $SCRIPTPATH/yst.conf
+fi
+
+# initialize runtime variables
+VERBOSE=0
+PRETEND=0
+
+#####################################
+# basic script functions
+
+function show_usage {
+	cat <<EOF
+usage: $SCRIPTNAME [-hv] [If]
+
+Options:
+ -v, --verbose     increase verbosity
+ -p, --pretend     do nothing
+(-h) --help        show this help (-h works with no other options)
+
+Deletes all explicitely set routes
+
+EOF
+}
+
+function show_name {
+	echo "$SCRIPTNAME, version $VERSION"
+}
+
+function show_verbose {
+	if [ $VERBOSE -ge $1 ]; then
+		echo "$SCRIPTNAME: ${*:2}"
+	fi
+}
+
+function show_error {
+	echo "$SCRIPTNAME error: $*" >&2
+}
+
+function test_exec {
+	case $? in
+	0);;
+	*)	case "$1" in
+		"")	show_error "last command failed with error (code $?)";;
+		*)	show_error "$1 failed with error (code $?)";;
+		esac
+		if [ -n "%2" ]; then
+			show_error "commandline: $2"
+		fi
+		exit $?;;
+	esac
+}
+
+#####################################
+# script initialisation
+
+PARSER=$(getopt --name "$SCRIPTNAME" --options h,v,p --longoptions help,verbose,pretend -- "$@")
+case $? in
+0);;
+1) show_error "syntax or usage error (code $?)"; exit $?;;
+2) show_error "syntax or usage error (code $?) in [getopt]"; exit $?;;
+3) show_error "internal error (code $?) in [getopt]"; exit $?;;
+4) show_error "wrong getopt version istalled"; exit $?;;
+*) show_error "Unknown getopt error (code $?)"; exit $?;;
+esac
+
+# Parameter parsing
+eval set -- "$PARSER"
+while true; do
+	case "$1" in
+	-h|--help)			show_name; echo; show_usage; exit 1;;
+	-v|--verbose)			(( VERBOSE++ )); shift;;
+	-p|--pretend)			PRETEND=1; shift;;
+	--)				shift; break;;
+        *)				echo "$SCRIPTNAME: $1: unknown option"; show_error "syntax or usage error (code 1)"; exit 1;;
+        esac
+done
+
+# configuration checking
+case "$VERBOSE" in
+0)	;;
+1)	;;
+*)	;;
+esac
+
+
+#####################################
+# script functions
+function route_delete {
+	if [ "$1" == "default" ]; then
+		show_verbose 1 "Skipping default route"
+	else
+		show_verbose 2 "Executing route del -net $1 netmask $2 $3 $4"
+		if [ $PRETEND -ne 1 ]; then
+			route del -net $1 netmask $2 $3 $4
+		fi
+	fi
+}
+
+#####################################
+# script main routine
+if [ $# -eq 0 ]; then
+	route | grep -w UG | awk '{print $1,$3}' | while read line
+	do
+		route_delete $line
+	done
+else
+	route | grep $1 | grep -w UG | awk '{print $1,$3}' | while read line
+	do
+		route_delete $line dev $1
+	done
+fi
+
+exit 0

@@ -1,0 +1,191 @@
+#!/bin/bash
+#
+# (c) 2008-2010 YeaSoft Int'l - Leo Moll
+#
+# This script performs several cleanup tasks in
+# preparation to the resel operation.
+
+VERSION=0.3
+SCRIPTNAME=$(basename $0)
+SCRIPTPATH=$(expr match "$0" '\(.*\)'\/$SCRIPTNAME)
+
+#####################################
+# variables section
+
+# initialize configuration variables
+
+# load configuration data
+if [ -e /etc/yst.conf ]; then
+	source /etc/yst.conf
+elif [ -e $SCRIPTPATH/yst.conf ]; then
+	source $SCRIPTPATH/yst.conf
+fi
+
+# initialize runtime variables
+VERBOSE=0
+APT=0
+LOG=0
+PRIVACY=0
+SHRINK=0
+DOHALT=0
+DOREBOOT=0
+DOCLEAR=0
+SUCCESS=0
+
+#####################################
+# basic script functions
+
+function usage {
+	cat <<EOF
+usage: $SCRIPTNAME [-hvaAlps]
+
+Options:
+ -v, --verbose                increase verbosity
+ -a, --apt-cache              delete the APT package cache
+ -A, --apt-all                delete all APT files
+ -l, --logfiles               delete all log files
+ -p, --privacy                delete all history files of user root
+ -c, --clear-persistent       cleans up persistent device assignments
+ -s, --shrink                 shrink growable VMware volumes
+ -H, --halt                   shutdown system after succesful changes
+ -R, --reboot                 reboot system after succesful changes
+(-h) --help                   show this help (-h works with no other options)
+
+This script purges the machine so that it will be ready for resealing
+and redistribution.
+
+EOF
+}
+
+function show_name {
+	echo "$SCRIPTNAME, version $VERSION"
+}
+
+function show_verbose {
+	if [ $VERBOSE -ge $1 ]; then
+		echo "$SCRIPTNAME: ${*:2}"
+	fi
+}
+
+function show_error {
+	echo "$SCRIPTNAME error: $*" >&2
+}
+
+function test_exec {
+	case $? in
+	0);;
+	*)	case "$1" in
+		"")	show_error "last command failed with error (code $?)";;
+		*)	show_error "$1 failed with error (code $?)";;
+		esac
+		if [ -n "%2" ]; then
+			show_error "commandline: $2"
+		fi
+		exit $?;;
+	esac
+}
+
+PARSER=$(getopt --name "$SCRIPTNAME" --options h,v,a,A,l,p,c,s,H,R --longoptions help,verbose,apt-cache,apt-all,logfiles,privacy,clear-persistent,shrink,halt,reboot -- "$@")
+case $? in
+0);;
+1) show_error "syntax or usage error (code $?)"; exit $?;;
+2) show_error "syntax or usage error (code $?) in [getopt]"; exit $?;;
+3) show_error "internal error (code $?) in [getopt]"; exit $?;;
+4) show_error "wrong getopt version istalled"; exit $?;;
+*) show_error "Unknown getopt error (code $?)"; exit $?;;
+esac
+
+# Parameter parsing
+eval set -- "$PARSER"
+while true; do
+	case "$1" in
+	-h|--help)			show_name; echo; usage; exit 1;;
+	-v|--verbose)			(( VERBOSE++ )); shift;;
+	-a|--apt-cache)			APT=1; shift;;
+	-A|--apt-all)			APT=2; shift;;
+	-l|--logfiles)			LOG=1; shift;;
+	-p|--privacy)			PRIVACY=1; shift;;
+	-c|--clear-persistent)		DOCLEAR=1; shift;;
+	-s|--shrink)			SHRINK=1; shift;;
+	-H|--halt)			DOHALT=1; shift;;
+	-R|--reboot)			DOREBOOT=1; shift;;
+	--)				shift; break;;
+        *)				echo "$SCRIPTNAME: $1: unknown option"; show_error "syntax or usage error (code 1)"; exit 1;;
+        esac
+done
+
+# configuration checking
+case "$VERBOSE" in
+0)	;;
+1)	show_name;;
+*)	show_name;;
+esac
+
+if [ $(($DOREBOOT + $DOHALT)) -ge 2 ]; then
+	show_error ambiguos options specified \(--halt and --reboot\)
+	exit 1
+fi
+
+if [ $APT -gt 0 ]; then
+	show_verbose 1 "Cleaning up APT cache"
+	apt-get clean
+	if [ $APT -gt 1 ]; then
+		show_verbose 1 "Cleaning up all APT files"
+		rm -f /var/lib/apt/cdroms.list~
+		rm -rf /var/lib/apt/lists/
+		mkdir -p /var/lib/apt/lists/partial
+		rm -rf /var/cache/apt
+		mkdir -p /var/cache/apt/archives/partial
+	fi
+	SUCCESS=1
+fi
+
+if [ $LOG -gt 0 ]; then
+	show_verbose 1 "Cleaning up log files"
+	logfiles="$(find /var/log -name *.[0-9])"
+	logfiles="$logfiles $(find /var/log -name *.gz)"
+	for logfile in $logfiles; do
+		show_verbose 2 "Deleting $logfile"
+	        rm -f $logfile
+	done
+	for logfile in $(find /var/log -type f); do
+		show_verbose 2 "Truncating $logfile"
+		>$logfile
+	done
+	SUCCESS=1
+fi
+
+if [ $PRIVACY -gt 0 ]; then
+	show_verbose 1 "Removing history files of user root"
+	rm -f /root/.*_history
+	SUCCESS=1
+fi
+
+if [ $DOCLEAR -gt 0 ]; then
+	show_verbose 1 "Cleaning up persistent device assignments"
+	rm -f /etc/udev/rules.d/70-persistent-cd.rules
+	rm -f /etc/udev/rules.d/70-persistent-net.rules
+	SUCCESS=1
+fi
+
+if [ $SHRINK -gt 0 ]; then
+	show_verbose 1 "Shrinkning VMware growable volumes"
+	vmware-shrink
+	SUCCESS=1
+fi
+
+if [ $SUCCESS -gt 0 ]; then
+	if [ $DOHALT -gt 0 ]; then
+		show_verbose 1 shutting down system
+		sleep 1
+		halt
+		return 0
+	fi
+	if [ $DOREBOOT -gt 0 ]; then
+		show_verbose 1 reboot system
+		sleep 1
+		reboot
+		return 0
+	fi
+fi
+

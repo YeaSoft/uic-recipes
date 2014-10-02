@@ -1,0 +1,25 @@
+#!/bin/sh
+#
+# (c) 2010 YeaSoft Int'l - Leo Moll
+#
+# Update the DNS server unless the IP address is a
+# private address that may be used as a internal
+# LAN address (or PPtP tunnel).
+#
+# This Script should be placed or linked in
+# /etc/ppp/ip-up.d/
+
+# Update regfish address
+logger -t regfish_ip_update $0 $*
+case "$PPP_LOCAL" in
+10.*)		;;
+172.1[6-9].* | 172.2[0-9].* | 172.3[0-1].*) ;;
+192.168.*)	;;
+"")		logger -t regfish_ip_update No local IP given so cannot update
+		;;
+*)		(
+			sleep 5
+			/usr/local/bin/regfish_ip_update -F -vv >> /var/log/regfish_ip_update.log
+		) &
+		;;
+esac
