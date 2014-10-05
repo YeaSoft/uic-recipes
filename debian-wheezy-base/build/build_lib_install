@@ -1,0 +1,143 @@
+#!/bin/bash
+#
+# (c) 2014 YeaSoft Int'l - Leo Moll
+#
+# Version 20140926
+# Custom build library for target installation
+#
+
+##################
+# helper functions
+
+cbl_install_getmountparams() {
+	# find mount data
+	while read _LINE; do
+		read cbl_install_FS_SPEC cbl_install_FS_FILE cbl_install_FS_VFSTYPE cbl_install_FS_MNTOPS cbl_install_FS_FREQ cbl_install_FS_PASSNO << EOF
+${_LINE}
+EOF
+		if [ "${cbl_install_FS_SPEC}" != "#" ] && [ "${cbl_install_FS_FILE}" = "$1" ]; then
+			unset _LINE
+			return 0
+		fi
+	done < $2
+	unset _LINE
+	return 1
+}
+
+cbl_install_hasrootfs() {
+	cbl_install_getmountparams "/" "$1"
+	return $?
+}
+
+#######################
+# build target routines
+
+# build target:	adjustfstab
+# parameters:	[-o|--options <fs options>] File system options for rootfs (replace)
+#		[-a|--append <fs options>] Additional file system options for rootfs (append to existing)
+# description:	This target routine detects the attached target volume and
+#		registers it as root file system in /etc/fstab
+build_target_adjustfstab() {
+	# prepare
+	CBS_ROOT="${TARGET}/chroot"
+	CBS_FSTAB="${CBS_ROOT}/etc/fstab"
+	# parse parameters
+	PARSER=$(getopt --name uic_build:adjustfstab --options o:,a: --longoptions options:,append: -- "$@")
+	test_getopt
+	eval set -- "${PARSER}"
+	while true; do
+		case "$1" in
+		-o|--options)	cbl_install_FS_OPTREPLACE="${2}"
+				shift 2
+				;;
+		-a|--append)	cbl_install_FS_OPTAPPEND="${2}"
+				shift 2
+				;;
+		--)		shift; break;;
+		esac
+	done
+	# check prerequisites
+	if [ ! -f ${CBS_FSTAB} ]; then
+		show_error "No valid installation in target file system."
+		exit 2
+	elif cbl_install_hasrootfs ${CBS_FSTAB}; then
+		show_verbose 1 "Root Filesystem already included in target file system table"
+	elif cbl_install_getmountparams "${TARGET}/chroot" /proc/mounts; then
+		# do your thing
+		show_verbose 1 "Registering attached device as root filesystem in target file system table"
+		echo >> ${CBS_FSTAB}
+		printf "%s\t\t\t/\t\t%s\t\t%s\t\t%s\t%s\n" \
+			${cbl_install_FS_SPEC} \
+			${cbl_install_FS_VFSTYPE} \
+			${cbl_install_FS_OPTREPLACE:-${cbl_install_FS_MNTOPS}}${cbl_install_FS_OPTAPPEND:+,${cbl_install_FS_OPTAPPEND}} \
+			${cbl_install_FS_FREQ} \
+			${cbl_install_FS_PASSNO} >> ${CBS_FSTAB}
+	else
+		show_error "No attached device to target file system"
+		exit 2
+	fi
+}
+
+# build target:	exitlinux
+# parameters:   [-t|--timout <seconds>] Boot timeout in seconds
+# description:	This target routine detects the attached target volume and
+#		makes it bootable by installing the extlinux boot loader
+build_target_extlinux() {
+	# prepare
+	CBS_ROOT="${TARGET}/chroot"
+	CBS_FSTAB="${CBS_ROOT}/etc/fstab"
+	# parse parameters
+	PARSER=$(getopt --name uic_build:extlinux --options t: --longoptions timeout: -- "$@")
+	test_getopt
+	eval set -- "${PARSER}"
+	while true; do
+		case "$1" in
+		-t|--timeout)	if [ -n "${2}" ] && [ "${2//[^0-9]/}" = "${2}" ]; then
+					cbl_install_BOOT_TIMEOUT="${2}"
+				else
+					show_warning "Bad boot timeout specified. Keeping default"
+				fi
+				shift 2
+				;;
+		--)		shift; break;;
+		esac
+	done
+	# check prerequisites
+	if [ ! -f "${CBS_FSTAB}" ]; then
+		show_error "No valid installation in target file system."
+		exit 2
+	elif [ ! -x "${CBS_ROOT}/usr/bin/extlinux" ]; then
+		show_error "No extlinux boot loader installed."
+		exit 2
+	elif [ ! -f "${CBS_ROOT}/usr/lib/extlinux/mbr.bin" ]; then
+		show_error "No extlinux boot loader installed."
+		exit 2
+	elif ! cbl_install_hasrootfs "${CBS_FSTAB}"; then
+		show_error "No root filesystem specified in /etc/fstab"
+		exit 2
+	elif cbl_install_getmountparams "${CBS_ROOT}" /proc/mounts; then
+		# NOTICE: The call of cbs_extlinux_getmountparamsl must be the last
+		#         one in order to get valid cbl_install_FS return vars
+		cbl_install_DEVICE="${cbl_install_FS_SPEC/%[0-9]*/}"
+		show_verbose 1 "Installing boot loader on ${cbl_install_DEVICE}"
+		chroot_init
+		chroot "${CBS_ROOT}" extlinux-install ${cbl_install_DEVICE} > /dev/null
+		test_exec chroot "${CBS_ROOT}" extlinux-install ${cbl_install_DEVICE}
+		if [ -n "${cbl_install_BOOT_TIMEOUT}" ]; then
+			FORMULA="s/^[[:space:]]*EXTLINUX_TIMEOUT[[:space:]]*=.*$/EXTLINUX_TIMEOUT=$(( ${cbl_install_BOOT_TIMEOUT} * 10 ))/"
+			sed -e "${FORMULA}" -i "${CBS_ROOT}/etc/default/extlinux"
+			if [ -f "${CBS_ROOT}/boot/extlinux/boot.txt" ]; then
+				echo "Wait ${cbl_install_BOOT_TIMEOUT} seconds or press ENTER to" > "${CBS_ROOT}/boot/extlinux/boot.txt"
+			fi
+		fi
+		chroot "${CBS_ROOT}" extlinux-update > /dev/null
+		test_exec chroot "${CBS_ROOT}" extlinux-update
+		chroot_exit
+		#show_verbose 1 "Writing master boot record to ${cbl_install_DEVICE}"
+		#dd if="${CBS_ROOT}/usr/lib/extlinux/mbr.bin" of=${cbl_install_DEVICE} > /dev/null 2> /dev/null
+		#test_exec dd if="${CBS_ROOT}/usr/lib/extlinux/mbr.bin" of=${cbl_install_DEVICE}
+	else
+		show_error "No attached device to target file system"
+		exit 2
+	fi
+}
