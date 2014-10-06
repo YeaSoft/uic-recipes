@@ -5,19 +5,37 @@
 auto lo
 iface lo inet loopback
 
-# bring up the first interfaces with DHCP
-auto eth0
+# bring up the first interface with DHCP
+allow-auto eth0
 iface eth0 inet dhcp
 
+# allow-hotplug eth1
 iface eth1 inet dhcp
 
+# allow-hotplug eth2
 iface eth2 inet dhcp
 
+# allow-hotplug eth3
 iface eth3 inet dhcp
 
+# sample of a statically configured adapter
+# allow-hotplug eth4
 iface eth4 inet static
-	address		192.168.1.1
-	netmask		255.255.255.000
+	address		192.168.1.22
+	netmask		255.255.255.0
+	gateway		192.168.1.1
 	# emergency fallback addresses
-	post-up		ip addr add 169.254.19.65/16 dev eth0
-	pre-down	ip addr del 169.254.19.65/16 dev eth0
+	post-up		ip addr add 169.254.19.65/16 dev $IFACE
+	pre-down	ip addr del 169.254.19.65/16 dev $IFACE
+	# additional addresses
+	post-up		ip addr add 192.168.1.129/24 dev $IFACE
+	pre-down	ip addr del 192.168.1.129/24 dev $IFACE
+	# IPv6 addresses
+	post-up		ip -6 addr add 2001:4dd0:ff00:aaaa::22/64 dev $IFACE
+	pre-down	ip -6 addr del 2001:4dd0:ff00:aaaa::22/64 dev $IFACE
+	# IPv6 default gateway
+	post-up		ip -6 route add default via 2001:4dd0:ff00:aaaa::1 dev $IFACE
+	pre-down	ip -6 route del default via 2001:4dd0:ff00:aaaa::1 dev $IFACE
+	# DNS configuration (requires package resolvconf)
+	dns-nameservers	192.168.1.15 192.168.16 2001:4dd0:ff00:aaaa::15
+	dns-search	example.com example.net example.org
