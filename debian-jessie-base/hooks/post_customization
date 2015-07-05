@@ -1,0 +1,30 @@
+#!/bin/bash
+#
+# (c) 2012-2014 YeaSoft Int'l - Leo Moll
+#
+# uic hook:	post_customization
+# called by:	uic_create, uic_build, uic_upgrade
+#
+# This hook will be called by several commands after making any customizations
+# (file copies and deletions) to the installation environment in $TARGET
+
+(
+cat <<EOF
+
+Welcome to Debian ${UIC_SRCVERSION}
+
+Created from Debian (${UIC_RELEASE}) on $(date +'%Y-%m-%d %H:%M %z') using
+ - UIC (Ubuntu Installation Creator) ${VERSION}
+ - ${UIC_SRCNAME} ${UIC_SRCVERSION} uic template
+
+ * Documentation: http://www.debian.org/doc
+
+The programs included with the Debian GNU/Linux system are free software;
+the exact distribution terms for each program are described in the
+individual files in /usr/share/doc/*/copyright.
+
+Debian GNU/Linux comes with ABSOLUTELY NO WARRANTY, to the extent
+permitted by applicable law.
+
+EOF
+) > "$TARGET/chroot/etc/motd"

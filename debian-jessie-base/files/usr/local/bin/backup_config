@@ -1,0 +1,231 @@
+#!/bin/bash
+#
+# (c) 2007-2010 YeaSoft Int'l - Leo Moll
+#
+# Based on a concept developed by Phil Wenzlawski
+#
+# This script performs a cyclic backup of the files
+# referenced in the config tree hierarchy in order 
+# to document and preserve configuration files
+
+VERSION=0.9
+SCRIPTNAME=$(basename $0)
+SCRIPTPATH=$(expr match "$0" '\(.*\)'\/$SCRIPTNAME)
+
+#####################################
+# variables section
+
+# initialize configuration variables
+CFGBACK_TREE=/root/cfg
+CFGBACK_PATH=/root/backups
+CFGBACK_NAME=daily-cfg
+CFGBACK_BACK=backup-cfg
+CFGBACK_MODE=""
+CFGBACK_OWNER=""
+CFGBACK_MAXAGE=30
+
+# load configuration data
+if [ -e /etc/yst.conf ]; then
+        source /etc/yst.conf
+elif [ -e $SCRIPTPATH/yst.conf ]; then
+	source $SCRIPTPATH/yst.conf
+fi
+
+# initialize runtime variables
+VERBOSE=0
+CURDATE=$(date +%Y-%m-%d)
+SHOWVERBOSE=0
+SHOWVARS=0
+PRETEND=0
+
+#####################################
+# basic script functions
+
+function show_usage {
+	cat <<EOF
+usage: $SCRIPTNAME [-hv]
+
+Options:
+ -v, --verbose                    increase verbosity
+ -s, --show-variables             show internal variables
+ -p, --pretend                    dry run (do not really do anything)
+(-h) --help                       show this help (-h works with no other options)
+
+This script performs a cyclic backup of the files referenced in the config tree
+hierarchy in order to document and preserve configuration files
+
+EOF
+}
+
+function show_name {
+	echo "$SCRIPTNAME, version $VERSION"
+}
+
+function show_verbose {
+	if [ $VERBOSE -ge $1 ]; then
+		echo "$SCRIPTNAME: ${*:2}"
+	fi
+}
+
+function show_error {
+	echo "$SCRIPTNAME error: $*" >&2
+}
+
+function show_variables {
+	echo
+	echo "Internal Variables:"
+	echo "  CFGBACK_TREE=\"$CFGBACK_TREE\""
+	echo "  CFGBACK_PATH=\"$CFGBACK_PATH\""
+	echo "  CFGBACK_NAME=\"$CFGBACK_NAME\""
+	echo "  CFGBACK_BACK=\"$CFGBACK_BACK\""
+	echo "  CFGBACK_MODE=\"$CFGBACK_MODE\""
+	echo "  CFGBACK_OWNER=\"$CFGBACK_OWNER\""
+	echo "  CFGBACK_MAXAGE=\"$CFGBACK_MAXAGE\""
+	echo
+}
+
+function test_exec {
+	case $? in
+	0);;
+	*)	case "$1" in
+		"")	show_error "last command failed with error (code $?)";;
+		*)	show_error "$1 failed with error (code $?)";;
+		esac
+		if [ -n "%2" ]; then
+			show_error "commandline: $2"
+		fi
+		exit $?;;
+	esac
+}
+
+#####################################
+# script initialisation
+
+PARSER=$(getopt --name "$SCRIPTNAME" --options h,v,s,p --longoptions help,verbose,show_verbose,show-variables,pretend -- "$@")
+case $? in
+0);;
+1) show_error "syntax or usage error (code $?)"; exit $?;;
+2) show_error "syntax or usage error (code $?) in [getopt]"; exit $?;;
+3) show_error "internal error (code $?) in [getopt]"; exit $?;;
+4) show_error "wrong getopt version istalled"; exit $?;;
+*) show_error "Unknown getopt error (code $?)"; exit $?;;
+esac
+
+
+# Parameter parsing
+eval set -- "$PARSER"
+while true; do
+        case "$1" in
+        -h|--help)                      show_name; echo; show_usage; exit 1;;
+        -v|--verbose)                   (( VERBOSE++ )); shift;;
+	--show_verbose)			SHOWVERBOSE=1; shift;;
+	-s|--show-variables)		SHOWVARS=1; shift;;
+	-p|--pretend)			PRETEND=1; shift;;
+        --)                             shift; break;;
+        *)                              echo "$SCRIPTNAME: $1: unknown option"; show_error "syntax or usage error (code 1)";$
+        esac
+done
+
+# configuration checking
+case "$VERBOSE" in
+0)			SV="";		TV="";;
+1)	show_name;	SV="-v";	TV="";;
+*)	show_name;	SV="-vv";	TV="-v";
+esac
+
+#####################################
+# script functions
+
+#####################################
+# script main routine
+
+
+if [ $SHOWVERBOSE -gt 0 ]; then
+	show_verbose $*
+	exit 0
+fi
+
+
+# create output filenames
+daily_name=$CFGBACK_NAME-$CURDATE.tar.bz2
+latest_name=$CFGBACK_BACK-latest.tar.bz2
+daily=$CFGBACK_PATH/$daily_name
+monthly=$CFGBACK_PATH/$CFGBACK_BACK-$CURDATE.tar.bz2
+latest=$CFGBACK_PATH/$latest_name
+
+if [ $SHOWVARS -ne 0 ]; then
+	show_variables
+fi
+
+# Leave trace in syslog
+if [ $PRETEND -eq 0 ]; then
+	logger -t vc-backup Creating Version Control Backup of confguration data
+fi
+
+# create the destination directory if needed
+if [ $PRETEND -ne 0 ]; then
+	show_verbose 1 "Not executing mkdir -p $CFGBACK_PATH"
+else
+	mkdir -p $CFGBACK_PATH || test_exec mkdir "Failed to create $CFGBACK_PATH"
+fi
+
+# Create the backup archive
+if [ $PRETEND -ne 0 ]; then
+	show_verbose 1 "Not executing tar $TV -cjhf $daily -C $CFGBACK_TREE ."
+else
+	show_verbose 1 "Creating archive $daily"
+	tar $TV -cjhf $daily -C $CFGBACK_TREE . || test_exec tar "Failed to create destination archive"
+fi
+
+# Archive the backup of the month's first
+if [ "$(date +%d)" = "01" ]; then
+	if [ $PRETEND -ne 0 ]; then
+		show_verbose 1 "Not executing cp $daily $monthly"
+	else
+		show_verbose 1 "Creating monthly archive $monthly"
+		cp $daily $monthly
+	fi
+fi
+
+# Kill all files older than CFGBACK_MAXAGE +1 days
+if [ $CFGBACK_MAXAGE -gt 0 ]; then
+	if [ $PRETEND -ne 0 ]; then
+		show_verbose 1 "Not executing find $CFGBACK_PATH/$CFGBACK_NAME-*.bz2 -maxdepth 0 -type f -mtime +$CFGBACK_MAXAGE -exec rm '{}' \;"
+	else
+		show_verbose 1 "Kill all files older than $CFGBACK_MAXAGE +1 days"
+	 	find $CFGBACK_PATH/$CFGBACK_NAME-*.bz2 -maxdepth 0 -type f -mtime +$CFGBACK_MAXAGE -exec $0 $SV --show_verbose 1 Deleting old file '{}' \;
+		find $CFGBACK_PATH/$CFGBACK_NAME-*.bz2 -maxdepth 0 -type f -mtime +$CFGBACK_MAXAGE -exec rm '{}' \;
+	fi
+fi
+
+# Create link on latest archive
+if [ $PRETEND -ne 0 ]; then
+	show_verbose 1 "Not executing ln -sf $daily $latest"
+else
+	show_verbose 1 "Creating symbolc link $latest"
+	ln -sf $daily_name $latest
+fi
+
+# Adjust mode and owner
+function adjust_mode_owner() {
+	if [ -e $1 -a "$2" != "" ]; then
+		if [ $PRETEND -ne 0 ]; then
+			show_verbose 1 "Not executing chmod \"$2\" \"$1\""
+		else
+			show_verbose 1 "Setting mode of \"$1\" to \"$2\""
+			chmod "$2" "$1" || test_exec chmod "Failed to change mode"
+		fi
+	fi
+	if [ -e $1 -a "$3" != "" ]; then
+		if [ $PRETEND -ne 0 ]; then
+			show_verbose 1 "Not executing chown \"$3\" \"$1\""
+		else
+			show_verbose 1 "Setting owner of \"$1\" to \"$3\""
+			chown "$3" "$1" || test_exec chown "Failed to change owner"
+		fi
+	fi
+}
+
+adjust_mode_owner "$daily" "$CFGBACK_MODE" "$CFGBACK_OWNER"
+adjust_mode_owner "$monthly" "$CFGBACK_MODE" "$CFGBACK_OWNER"
+adjust_mode_owner "$latest" "$CFGBACK_MODE" "$CFGBACK_OWNER"

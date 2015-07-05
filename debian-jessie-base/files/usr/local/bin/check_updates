@@ -1,0 +1,381 @@
+#!/bin/bash
+#
+# (c) 2008-2010 YeaSoft Int'l - Leo Moll
+#
+# Inspired by an original script provided by Phil Wenzlawski
+#
+# This script checks for updates via apt or emerge. If any
+# updates are found, it does the following:
+#
+# 1) Downloads the packages (but does not install)
+# 2) Pulls the latest from the changelog 
+# 3) E-mails the results to the address(es) supplied. If no address
+#    is supplied, it will mail the results to the addresses listed
+#    in $DEFAULT_ADDR
+
+VERSION=0.7
+SCRIPTNAME=$(basename $0)
+SCRIPTPATH=$(expr match "$0" '\(.*\)'\/$SCRIPTNAME)
+
+#####################################
+# variables section
+
+# initialize configuration variables
+DEFAULT_ADDR="root"
+DEFAULT_FROM="Root Account ($(hostname)) <root>"
+
+# load configuration data
+if [ -e /etc/yst.conf ]; then
+	source /etc/yst.conf
+elif [ -e $SCRIPTPATH/yst.conf ]; then
+	source $SCRIPTPATH/yst.conf
+fi
+
+# initialize runtime variables
+VERBOSE=0
+SYNCPACKDB=1
+DOWNLOAD=1
+MAILIT=1
+FULLDATE=$(date)
+HOST=$(hostname)
+FQDN=$(hostname -f)
+MAIL_FROM="$DEFAULT_FROM"
+MAIL_SUBJ="$FQDN - Package Update Report"
+MAIL_DEST="$DEFAULT_ADDR"
+
+#####################################
+# basic script functions
+
+function show_usage {
+	cat <<EOF
+usage: $SCRIPTNAME [-hv] [to-addr] [...]
+
+Options:
+ -v, --verbose                    increase verbosity
+ -S, --no-sync                    do not synchronize the package database
+ -D, --no-download                do not download the packages to update
+ -p, --pretend                    do not mail it, output the results
+(-h) --help                       show this help (-h works with no other options)
+
+This script checks for updates. If any updates are found, it does the following:
+
+ 1) Downloads the packages (but does not install)
+ 2) Pulls the latest from the changelog
+ 3) E-mails the results to the address(es) supplied. If no address
+    is supplied, it will mail the results to the addresses listed
+    in \$DEFAULT_ADDR ($DEFAULT_ADDR)
+
+EOF
+}
+
+function show_name {
+	echo "$SCRIPTNAME, version $VERSION"
+}
+
+function show_verbose {
+	if [ $VERBOSE -ge $1 ]; then
+		echo "$SCRIPTNAME: ${*:2}"
+	fi
+}
+
+function show_error {
+	echo "$SCRIPTNAME error: $*" >&2
+}
+
+function test_exec {
+	case $? in
+	0);;
+	*)	case "$1" in
+		"")	show_error "last command failed with error (code $?)";;
+		*)	show_error "$1 failed with error (code $?)";;
+		esac
+		if [ -n "%2" ]; then
+			show_error "commandline: $2"
+		fi
+		exit $?;;
+	esac
+}
+
+#####################################
+# script initialisation
+
+PARSER=$(getopt --name "$SCRIPTNAME" --options h,v,S,D,p --longoptions help,verbose,no-sync,no-download,pretend -- "$@")
+case $? in
+0);;
+1) show_error "syntax or usage error (code $?)"; exit $?;;
+2) show_error "syntax or usage error (code $?) in [getopt]"; exit $?;;
+3) show_error "internal error (code $?) in [getopt]"; exit $?;;
+4) show_error "wrong getopt version istalled"; exit $?;;
+*) show_error "Unknown getopt error (code $?)"; exit $?;;
+esac
+
+# Parameter parsing
+eval set -- "$PARSER"
+while true; do
+	case "$1" in
+	-v|--verbose)			(( VERBOSE++ )); shift;;
+	-S|--no-sync)			SYNCPACKDB=0; shift;;
+	-D|--no-download)		DOWNLOAD=0; shift;;
+	-p|--pretend)			MAILIT=0; shift;;
+	-h|--help)			show_name; echo; show_usage; exit 1;;
+	--)				shift; break;;
+        *)				echo "$SCRIPTNAME: $1: unknown option"; show_error "syntax or usage error (code 1)"; exit 1;;
+        esac
+done
+
+# configuration checking
+case "$VERBOSE" in
+0)	AV="-qq"; EV="--color n --nospinner --quiet";   EE=" > /dev/null";;
+1)	AV="-q";  EV="--color n --nospinner";           EE="";;
+*)	AV="";    EV="--color n --nospinner --verbose"; EE="";;
+esac
+
+if [ $# -gt 0 ]; then
+	MAIL_DEST="$*"
+fi
+
+#####################################
+# script functions
+
+function test_distro
+{
+	DISTRO=invalid
+	if [ -e /etc/debian_version ]; then
+		DISTRO=debian
+	fi
+	if [ -e /etc/gentoo-release ]; then
+		DISTRO=gentoo
+	fi
+
+	if [ "$DISTRO" = "invalid" ]; then
+		show_error this script runs only on debian, ubuntu or gentoo
+		exit 1
+	fi
+}
+
+function make_gentoo_update
+{
+	if [ $VERBOSE -gt 0 ]; then
+		emerge $EV --sync || test_exec emerge "emerge --sync"
+	else
+		emerge $EV --sync > /dev/null || test_exec emerge "emerge --sync"
+	fi
+}
+
+function make_update
+{
+	if [ $SYNCPACKDB -lt 1 ]; then
+		show_verbose 1 "skipping synchronization of package database"
+		return 0
+	fi
+	show_verbose 1 "synchronizing package database"
+
+	case "$DISTRO" in
+	debian)	apt-get $AV update || test_exec apt-get "apt-get update";;
+	gentoo)	make_gentoo_update;;
+	*)	show_error "this script runs only on debian, ubuntu or gentoo"; exit 1;;
+	esac
+}
+
+function make_debian_package_list
+{
+	if apt-get -qq -s upgrade | grep "Inst" > /dev/null; then
+		# create the package list
+		PACKAGE_LIST=$(apt-get -qq -s upgrade | awk '$1 ~ /Inst/ { print $2}')
+	else
+		PACKAGE_LIST=""
+	fi
+}
+
+function make_gentoo_package_list
+{
+	PACKAGE_LIST=$(emerge --quiet --color n --nospinner --columns -puDN world | awk '{ print $2 }')
+}
+
+function make_package_list
+{
+	case "$DISTRO" in
+	debian)	make_debian_package_list;;
+	gentoo)	make_gentoo_package_list;;
+	*)	show_error "this script runs only on debian, ubuntu or gentoo"; exit 1;;
+	esac
+
+	if [ -z "$PACKAGE_LIST" ]; then
+		show_verbose 1 "There are no new updates to install"
+	else
+		show_verbose 1 "Found packages to install"
+	fi
+}
+
+function make_gentoo_package_download
+{
+	if [ $VERBOSE -gt 0 ]; then
+		emerge $EV -fuDN world || test_exec emerge "emerge --fetch --update --deep --newuse world"
+	else
+		emerge $EV -fuDN world > /dev/null || test_exec emerge "emerge --fetch --update --deep --newuse world"
+	fi
+}
+
+function make_package_download
+{
+	if [ $DOWNLOAD -lt 1 ]; then
+		show_verbose 1 "skipping package download"
+		return 0
+	fi
+	show_verbose 1 "downloading packages"
+
+	case "$DISTRO" in
+	debian)	apt-get $AV -y -d upgrade || test_exec apt-get "apt-get -d upgrade";;
+	gentoo)	make_gentoo_package_download;;
+	*)	show_error "this script runs only on debian, ubuntu or gentoo"; exit 1;;
+	esac
+}
+
+function output_debian_changes
+{
+	LISTCHANGES=$(which apt-listchanges 2> /dev/null)
+
+	if [ ! -z "$LISTCHANGES" ]; then
+		echo -e "\n\nChangelog:\n==========\n"
+		for package in $PACKAGE_LIST; do
+			apt-listchanges -f text /var/cache/apt/archives/$package* 2>/dev/null
+		done
+	fi
+}
+
+function output_gentoo_package_changes
+{
+	local CHANGELOG
+
+	CHANGELOG="$PORTDIR/${2}/ChangeLog"
+	PKG=$(basename ${2})
+	NEWPKG="*${PKG}-${3}"
+	OLDPKG="*${PKG}-${4}"
+	VERSIONS=($(grep --color=never "^.${PKG}" $CHANGELOG | grep --color=never -A 10000 "^.$NEWPKG" | awk '{ print $1 }'))
+
+
+
+	case "$1" in
+	U)
+		echo "Update to ${NEWPKG:1} (From $4)"
+		echo ----------------------------------------------------------------------
+		if [ -e $CHANGELOG ]; then
+			grep --color=never -A 10000 "^${NEWPKG}" $CHANGELOG | grep --color=never -B 10000 "^$OLDPKG" | grep --color=never -v "^$OLDPKG"
+		fi
+		echo
+		;;
+	R|N|NS)
+		case "$1" in
+		R)	echo "Rebuild of ${NEWPKG:1}";;
+		N)	echo "New ${NEWPKG:1}";;
+		NS)	echo "Update in new slot ${NEWPKG:1}";;
+		esac
+		echo ----------------------------------------------------------------------
+		if [ ${#VERSIONS[@]} -gt 1 ]; then
+			grep --color=never -A 10000 "^${NEWPKG}" $CHANGELOG | grep --color=never -B 10000 "^${VERSIONS[1]}" | grep --color=never -v "^${VERSIONS[1]}"
+		else
+			grep --color=never -A 10000 "^${NEWPKG}" $CHANGELOG
+		fi
+		;;
+	esac
+}
+
+function output_gentoo_changes
+{
+	local operation package newversion oldversion
+
+	echo -e "\n\nChangelog:\n==========\n"
+
+	emerge --quiet --color n --nospinner --columns -puDN world |
+	while read operation package newversion oldversion
+	do
+		oldversion=$(expr match "$oldversion" '\[\(.*\)\]')
+		output_gentoo_package_changes $operation $package $newversion $oldversion
+		unset operation package newversion oldversion
+	done
+}
+
+function output_changes
+{
+	case "$DISTRO" in
+	debian)	output_debian_changes;;
+	gentoo)	output_gentoo_changes;;
+	*)	show_error "this script runs only on debian, ubuntu or gentoo"; exit 1;;
+	esac
+}
+
+function output_updates
+{
+	cat <<EOF
+PACKAGE UPDATE REPORT
+=====================
+Date: $FULLDATE
+Host: $FQDN.
+
+The following packages have been updated on the $DISTRO mirrors and require an update on $FQDN:
+
+EOF
+	for package in $PACKAGE_LIST; do
+		echo " * $package"
+	done
+	if [ $DOWNLOAD -gt 0 ]; then
+		echo -e "\nThe packages have been downloaded locally, but not installed."
+	fi
+	output_changes
+}
+
+
+#####################################
+# script main routine
+
+# check if we are compatible
+test_distro
+
+if [ "$DISTRO" = "gentoo" ]; then
+	source /etc/make.globals
+	source /etc/make.conf
+fi
+
+
+######################################################################
+# test suite for gentoo
+# output_gentoo_package_changes U sys-fs/e2fsprogs 1.40.6 1.40.4
+# output_gentoo_package_changes NS sys-kernel/gentoo-sources 2.6.24-r3
+# output_gentoo_package_changes R media-video/motion 3.2.9
+# exit
+######################################################################
+
+# First, we update our package lists
+make_update
+
+# and determine if we have any updates
+make_package_list
+
+
+if [ -z "$PACKAGE_LIST" ]; then
+	# no new packages
+	exit 0
+fi
+
+# download the packages
+make_package_download
+
+if [ $MAILIT -gt 0 ]; then
+	MAILPROG=$(which mail 2> /dev/null)
+	if [ -z "$MAILPROG" ]; then
+		show_error "mail program 'mail' is not installed"
+		exit 1
+	fi
+
+	# mail the output
+	show_verbose 1 Sending mail notification to $MAIL_DEST
+	output_updates | mail -a "From: $MAIL_FROM" -s "$MAIL_SUBJ" $MAIL_DEST
+else
+	# show the output
+	echo "To: $MAIL_DEST"
+	echo "From: $MAIL_FROM"
+	echo "Subject: $MAIL_SUBJ"
+	echo
+	output_updates
+fi
+

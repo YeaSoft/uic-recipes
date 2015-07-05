@@ -1,0 +1,15 @@
+#!/bin/bash
+
+if [ $# -ne 2 ]; then
+	echo "USAGE: send-storm <destination> <number of 64k packets>"
+	exit 1
+fi
+
+if [ $2 -lt 1 -o $2 -gt 100000 ]; then
+	echo "USAGE: send-storm <destination> <number of 64k packets>"
+	exit 1
+fi
+
+echo "Sending $2 64k data packets to $1..."
+dd if=/dev/zero bs=65536 count=$2 | nc -v -q 0 $1 discard
+

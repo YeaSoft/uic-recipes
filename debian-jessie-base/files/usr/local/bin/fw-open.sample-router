@@ -1,0 +1,122 @@
+#!/bin/bash
+#
+# (c) 2009-2010 YeaSoft Int'l - Leo Moll
+#
+# This script opens the firewall of a typical Router
+# and saves it permanently if -s is specified
+#
+SCRIPTNAME=$(basename $0)
+SCRIPTPATH=$(expr match "$0" '\(.*\)'\/$SCRIPTNAME)
+SCRIPTEXTE=$(expr match "$SCRIPTNAME" '[^.]*.\(.*\)')
+
+#========================================
+# param1: protocol
+# param2: incoming address
+# param3: destination address
+# param4: port number
+#
+function hard_redirect() {
+	if [ "$1" != "all" ]; then
+		HDPROTO="--protocol $1"
+	else
+		HDPROTO=""
+	fi
+	if [ "$2" != "0.0.0.0" ]; then
+		HDSOURCE=" --destination $2"
+	else
+		HDSOURCE=""
+	fi
+	if [ "$4" != "0" ]; then
+		HDPORT1="--dport $4"
+		HDPORT2="--to-destination $3:$4"
+	else
+		HDPORT1=""
+		HDPORT2="--to-destination $3"
+	fi
+	$IPTABLES --append PREROUTING --table nat --in-interface $EXTIF $HDPROTO $HDSOURCE $HDPORT1 --jump DNAT $HDPORT2
+	$IPTABLES --append FORWARD --in-interface $EXTIF --out-interface $INTIF $HDPROTO --destination $3 $HDPORT1 --jump ACCEPT
+
+#	if [ "$2" != "0.0.0.0" ]; then
+#		$IPTABLES --append PREROUTING --table nat --in-interface $EXTIF --protocol $1 --destination $2 --dport $4 --jump DNAT --to-destination $3:$4
+#		$IPTABLES --append FORWARD --in-interface $EXTIF --out-interface $INTIF --protocol $1 --destination $3 --dport $4 --jump ACCEPT
+#	else
+#		$IPTABLES --append PREROUTING --table nat --in-interface $EXTIF --protocol $1 --dport $4 --jump DNAT --to-destination $3:$4
+#		$IPTABLES --append FORWARD --in-interface $EXTIF --out-interface $INTIF --protocol $1 --destination $3 --dport $4 --jump ACCEPT
+#	fi
+}
+
+#=====================
+#
+# Initialize Variables
+#
+IPTABLES=/sbin/iptables
+
+EXTIF="eth0"
+INTIF="eth1"
+TUNIF="tun+"
+
+
+#==================
+#
+# Log instantiation
+#
+logger -t fw-setup Configuring Firewall
+echo "Configuring Firewall..."
+
+
+#=======================================================================
+# iptables has 3 tables: the "filter", the "nat" and the "mangle" table.
+# If not otherwise specified by the "-t [table]" parameter, all commands
+# apply to the "filter table"
+#=======================================================================
+
+#==========================
+#
+# Initialize:
+#
+# Set Default Policies to ACCEPT and flush all rules for each chain...
+#
+$IPTABLES --policy INPUT ACCEPT
+$IPTABLES --flush  INPUT
+$IPTABLES --policy OUTPUT ACCEPT
+$IPTABLES --flush  OUTPUT
+$IPTABLES --policy FORWARD ACCEPT
+$IPTABLES --flush  FORWARD
+#
+# Flush also all rules in the nat table
+#
+$IPTABLES --table nat --flush
+
+#=====================
+# FORWARD chain rules:
+#
+# The following rules apply only to forwarded packets
+#
+echo -e "Router: Allow all connections OUT and only existing and specified ones IN"
+
+#=====================
+#
+# Configure masquerading on NAT
+#
+echo "Enabling SNAT (MASQUERADE) functionality on $EXTIF"
+
+#
+# Masquerade all packets ROUTED to the external interface
+#
+$IPTABLES --table nat --append POSTROUTING --out-interface $EXTIF  --jump MASQUERADE
+
+
+#
+# Save firewall configuration
+#
+if [ "$1" == "-s" ]; then
+	iptables-save > /etc/iptables.conf
+	logger -t fw-setup Firewall configuration saved as default
+	echo "Saving firewall rules..."
+fi
+
+#====================
+#
+# Finished!
+#
+echo "Firewall done."

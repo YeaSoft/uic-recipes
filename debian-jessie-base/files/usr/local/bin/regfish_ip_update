@@ -1,0 +1,167 @@
+#!/bin/bash
+#
+# (c) 2009-2010 YeaSoft Int'l - Leo Moll
+#
+# This is the regfish DynDns updator
+#
+
+VERSION=1.0
+SCRIPTNAME=$(basename $0)
+SCRIPTPATH=$(expr match "$0" '\(.*\)'\/$SCRIPTNAME)
+
+# initialize default values
+TOKEN="*NIX*"
+FQDN="*NIX*"
+ADDR="detect"
+
+# load configuration data
+if [ -e /etc/regfish_ip_update.conf ]; then
+	source /etc/regfish_ip_update.conf
+elif [ -e $SCRIPTPATH/regfish_ip_update.conf ]; then
+	source $SCRIPTPATH/regfish_ip_update.conf
+fi
+
+# Initialize runtime variables
+VERBOSE=0
+FORCE=0
+PRETEND=0
+
+function usage {
+	cat <<EOF
+usage: $SCRIPTNAME [-hv] [-t <token>] [-f <fqdn>]
+
+
+Options:
+ -v, --verbose                    increase verbosity
+ -f, --fqdn=<fqdn>                specify a specific full qualified host name
+ -t, --token=<token>              specify a specific token
+ -a, --address=<address>          specify a specific ip address
+ -p, --pretend                    do nothing
+ -F, --force                      force update also if ip address is not changed
+(-h) --help                       show this help (-h works with no other options)
+
+This script registers an FQDN with regfish
+
+EOF
+}
+
+function show_name {
+	echo "$SCRIPTNAME, version $VERSION"
+}
+
+function show_verbose {
+	if [ $VERBOSE -ge $1 ]; then
+		echo "$SCRIPTNAME: ${*:2}"
+	fi
+}
+
+function show_error {
+	echo "$SCRIPTNAME error: $*" >&2
+}
+
+PARSER=$(getopt --name "$SCRIPTNAME" --options h,v,t:,f:,a:,p,F --longoptions help,verbose,token:,fqdn:,address:,pretend,force -- "$@")
+case $? in
+0);;
+1) show_error "syntax or usage error (code $?)"; exit $?;;
+2) show_error "syntax or usage error (code $?) in [getopt]"; exit $?;;
+3) show_error "internal error (code $?) in [getopt]"; exit $?;;
+4) show_error "wrong getopt version istalled"; exit $?;;
+*) show_error "Unknown getopt error (code $?)"; exit $?;;
+esac
+
+# Parameter parsing
+eval set -- "$PARSER"
+while true; do
+	case "$1" in
+	-h|--help)			show_name; echo; usage; exit 1;;
+	-v|--verbose)			(( VERBOSE++ )); shift;;
+	-t|--token)			TOKEN=$2; shift 2;;
+	-f|--fqdn)			FQDN=$2; shift 2;;
+	-a|--address)			ADDR=$2; shift 2;;
+	-F|--force)			FORCE=1; shift;;
+	-p|--pretend)			PRETEND=1; shift;;
+	--)				shift; break;;
+	*)				echo "$SCRIPTNAME: $1: unknown option"; show_error "syntax or usage error (code 1)";$
+        esac
+done
+
+# configuration checking
+case "$VERBOSE" in
+0)	PV="";    TV="";   EV="-q";;
+1)	PV="-v";  TV="";   EV="-q";;
+*)	PV="-vv"; TV="-v"; EV="-v";;
+esac
+
+WGET=$(which wget)
+CAT=$(which cat)
+
+function get_iface_ip {
+	if [ ! -e /sys/class/net/$1/operstate -o "$(cat /sys/class/net/$1/operstate)" == "down" ]; then
+		show_verbose 2 Interface $1 is down
+		aIP="0.0.0.0"
+	else
+		aIP=$(expr match "$(ifconfig $1)" '.*inet addr:\([0-9,.]*\) .*')
+		show_verbose 2 Interface $1 has ip address $aIP
+	fi
+}
+
+
+if [ ! -e /tmp/myIP ]; then
+	echo "0.0.0.0" > /tmp/myIP
+	chmod 600 /tmp/myIP
+fi
+
+if [ "$TOKEN" = "*NIX*" ]; then
+	show_error "Token not configured"
+	exit 2
+fi
+
+if [ "$FQDN" = "*NIX*" ]; then
+	show_error "Domain Name not configured"
+	exit 2
+fi
+
+if [ "$ADDR" = "detect" ]; then
+	aIP=$($WGET -q -O - 'http://www.regfish.de/show_myip.php')
+else
+	IFACE=$(expr match "$ADDR" 'iface:\(.*\)')
+	if [ "$IFACE" = "" ]; then
+		aIP=$ADDR
+	else
+		get_iface_ip $IFACE
+	fi
+fi
+SIP=$($CAT /tmp/myIP)
+
+show_verbose 2 "Cached address is $SIP"
+show_verbose 2 "Current address is $aIP"
+
+if [ "$aIP" = "$SIP" ]; then
+	if [ $FORCE -lt 1 ]; then
+		show_verbose 1 "IP address is not changed - exiting"
+		exit 0
+	fi
+	show_verbose 1 "IP address $SIP is not changed - update of $FQDN forced"
+else
+	show_verbose 1 "Registering changed ip ($SIP) address $aIP as $FQDN ..."
+fi
+
+if [ $PRETEND -lt 1 ]; then
+	if [ "$ADDR" = "detect" ]; then
+		retCode=$($WGET -q -O - --no-check-certificate 'https://dyndns.regfish.de/?fqdn='$FQDN'&thisipv4=1&forcehost=1&authtype=secure&token='$TOKEN)
+	else
+		retCode=$($WGET -q -O - --no-check-certificate 'https://dyndns.regfish.de/?fqdn='$FQDN'&ipv4='$aIP'&forcehost=1&authtype=secure&token='$TOKEN)
+	fi
+else
+	retCode=999
+fi
+
+show_verbose 2 "Registration returned $retCode"
+
+if [ "$retCode" = "success|100|update succeeded!" -o "$retCode" = "success|101|already up-to-date!" ]; then
+	show_verbose 1 "Update was successful"
+	echo $aIP > /tmp/myIP
+	exit 0
+fi
+
+exit 1

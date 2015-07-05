@@ -1,0 +1,19 @@
+#!/bin/bash
+#
+# (c) 2008 YeaSoft Int'l - Leo Moll
+#
+# This script invokes a machine specific scipt
+#
+
+HOSTNAME=$(hostname)
+
+if [ -x $0.$HOSTNAME ]; then
+	. $0.$HOSTNAME
+else
+	if [ -x $0.universal ]; then
+		. $0.universal
+	else
+		echo ERROR: Machine specific script $(basename $0.$HOSTNAME) not found >&2
+		exit 2
+	fi
+fi

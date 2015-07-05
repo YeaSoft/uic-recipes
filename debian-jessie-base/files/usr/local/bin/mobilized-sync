@@ -1,0 +1,32 @@
+#!/bin/bash
+#
+# (c) 2010 YeaSoft Int'l - Leo Moll
+#
+# This script synchronizes all scripts and shared
+# configs in a mobilized environment
+#
+VERSION=1.0
+SCRIPTNAME=$(basename $0)
+SCRIPTPATH=$(expr match "$0" '\(.*\)'\/$SCRIPTNAME)
+
+# initialize default values
+MOBHUB="10.21.0.1"
+YEAPXE="pxeloader@10.65.0.10"
+
+# synchronize the scripts themselves
+echo Pull server scripts...
+echo ----------------------
+rsync --verbose --stats --human-readable --checksum --recursive --links --perms --rsh=ssh --compress ${MOBHUB}:/mnt/data/tftproot/yeatool/ /usr/local/bin/
+
+# synchronize the bind environment
+echo Pull bind configurations...
+echo ---------------------------
+rsync --verbose --stats --human-readable --checksum --recursive --links --perms --rsh=ssh --compress ${MOBHUB}:/etc/bind/named.conf.*.*ar? /etc/bind
+rsync --verbose --stats --human-readable --checksum --recursive --links --perms --rsh=ssh --compress ${MOBHUB}:/etc/bind/named.conf.local.*-gate /etc/bind
+service bind9 restart
+
+# synchronize the PXE loader
+echo Pull PXE Boot Environment...
+echo ----------------------------
+rsync --verbose --stats --human-readable --checksum --recursive --links --perms --delete --rsh=ssh --compress ${YEAPXE}:/mnt/data/tftproot/yeaboot/ /mnt/data/tftproot/yeaboot/
+
