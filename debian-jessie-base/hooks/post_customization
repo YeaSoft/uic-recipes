@@ -29,6 +29,12 @@ permitted by applicable law.
 EOF
 ) > "$TARGET/chroot/etc/motd"
 
-if [ -f "$TARGET/chroot/etc/ssh/sshd_config" ]; then
-	sed -i -e "s/PermitRootLogin.*without-password/PermitRootLogin yes # UIC:Modified without-password/" "$TARGET/chroot/etc/ssh/sshd_config"
+# Newer versions of the OpenSSH package do enforce root login
+# with key base dauthentication or disable it at all. We want to
+# make sure root can login via SSH also with password. The admin
+# can change this later on.
+if [ -f "${TARGET}/chroot/etc/ssh/sshd_config" ]; then
+	sed 	-i \
+		-e 's/^[[:space:]]*PermitRootLogin[[:space:]]*.*$/PermitRootLogin yes # UIC:Modified without-password/' \
+		"${TARGET}/chroot/etc/ssh/sshd_config"
 fi
